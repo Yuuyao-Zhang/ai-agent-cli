@@ -1,8 +1,8 @@
 # AI Assistant - 生产级 Agentic AI 框架
 
-> 模块化、零依赖、生产级的 AI Agent 框架，支持分层记忆、蜂群智能、状态管理、渐进式技能系统、MCP 协议等高级特性。
+> 模块化、零依赖、生产级的 AI Agent 框架，支持分层记忆、层级 RAG 知识检索、蜂群智能、状态管理、渐进式技能系统、MCP 协议等特性。
 
-本项目是一个**生产级的 Agentic AI 框架**，采用模块化架构设计，使用 Python 标准库实现了完整的 Agent 能力，无需依赖 LangChain 等重型框架。核心特性包括**分层记忆系统**、**蜂群智能协作**、**状态快照与分支管理**、**渐进式披露技能系统**、**MCP 协议集成**、**知识管理**等。
+本项目是一个**生产级的 Agentic AI 框架**，采用模块化架构设计，使用 Python 标准库实现完整的 Agent 能力，无需依赖 LangChain 等重型框架。核心特性包括**分层记忆系统**、**层级 RAG 知识库**、**状态快照与分支管理**、**渐进式披露技能系统**、**MCP 协议集成**、**蜂群智能协作**等。
 
 ---
 
@@ -18,7 +18,7 @@
 - **三层记忆架构**: 短期记忆(活跃窗口) → 中期记忆(SQLite摘要) → 长期记忆(向量索引)
 - **滑动窗口摘要**: 自动压缩历史对话，保留关键信息
 - **Token 预测器**: 基于历史消耗预测未来 Token 需求
-- **高级 RAG 检索**: 查询重写 + 多路召回 + 重排序
+- **上下文剪枝**: 结合摘要与活跃窗口控制 Prompt 大小
 
 ### 3. 状态管理 (State Management)
 - **会话隔离**: Namespace 变量隔离与继承机制
@@ -49,10 +49,11 @@
 - **敏感路径保护**: 系统关键目录访问控制
 
 ### 7. 知识管理 (Knowledge Management)
-- **文件索引**: 支持单文件和目录批量索引
-- **向量搜索**: 基于语义相似度的知识检索
-- **标签系统**: 多标签分类管理
-- **Prompt 集成**: 检索结果可直接用于上下文
+- **自动同步**: `knowledge/library` 下的 `.md` / `.txt` 文件可一键同步
+- **层级 RAG**: 按 Markdown 标题解析 section/chunk 父子结构
+- **父子检索**: 先召回标题章节，再过滤并重排子块
+- **结果去噪**: 标题重叠加权、代码块降权、目录节点过滤、同 section 去重
+- **回答引用**: 最终回答会自动附带知识来源引用
 
 ### 8. MCP 协议集成
 - **动态工具发现**: 自动发现 MCP Server 提供的工具
@@ -129,127 +130,101 @@
 
 ## 快速开始
 
-### 1. 启动 Agent
+### 1. 配置系统环境变量
+
+在首次启动前，建议先把必要配置写入**系统环境变量**。
+
+Windows PowerShell 示例：
+
+```powershell
+[System.Environment]::SetEnvironmentVariable("DASHSCOPE_API_KEY", "你的通义千问 API Key", "User")
+[System.Environment]::SetEnvironmentVariable("LLM_MODEL", "qwen-plus", "User")
+[System.Environment]::SetEnvironmentVariable("BAIDU_MAPS_MCP_AK", "你的百度地图 AK", "User")
+```
+
+说明：
+- `DASHSCOPE_API_KEY`：必需，用于主对话模型和 embedding
+- `LLM_MODEL`：可选，默认是 `qwen-plus`
+- `BAIDU_MAPS_MCP_AK`：仅在你配置百度地图 MCP 时需要
+
+设置完成后，请**关闭并重新打开终端**，让新环境变量生效。
+
+### 2. 启动 Agent
 
 ```bash
 python main.py
 ```
 
-### 2. 使用分层记忆系统
+### 3. 首次同步知识库
 
-```python
-from state.session import Session
-from memory import MemoryManager
+将你的 Markdown/TXT 知识文件放到 `knowledge/library` 下，例如：
 
-session = Session()
-memory = MemoryManager(session)
-
-# 添加消息，自动触发记忆管理
-memory.add_message("user", "请帮我写一个 Python 函数")
-memory.add_message("assistant", "好的，我来帮你...")
-
-# 获取上下文（包含摘要 + 短期记忆）
-context = memory.get_context()
+```text
+knowledge/
+└── library/
+    └── python_basics/
+        ├── python_base.md
+        └── python_advanced.md
 ```
 
-### 3. 使用状态快照
+进入交互界面后，使用 `kn` 菜单同步默认知识目录。
 
-```python
-from state.session import Session
-from state.checkpoint import checkpoint_manager
+### 4. 真实对话示例
 
-session = Session()
+下面是一个启动 `main.py` 后的真实使用方式，包含知识同步、菜单搜索和正常提问：
 
-# 创建快照
-checkpoint_id = checkpoint_manager.create_checkpoint(session, "手动保存")
+```text
+$ python main.py
 
-# 恢复状态
-new_session = checkpoint_manager.load_checkpoint(checkpoint_id)
+用户 (kn知识, config配置, cp快照, br分支, mem记忆, swarm蜂群, q退出)> kn
+
+[Knowledge Menu]
+Default Knowledge Dir: G:\PythonProject\AI-agent-CLI\knowledge\library
+1. Search Knowledge
+2. Index File
+3. Index Directory
+4. List All Knowledge
+5. Add Custom Knowledge
+6. Sync Default Knowledge Directory
+Select option (1-6): 6
+
+[INFO] Synced knowledge directory: indexed=0, updated=0, removed=0, skipped=2
+
+用户 (kn知识, config配置, cp快照, br分支, mem记忆, swarm蜂群, q退出)> Python 默认参数 exponent=2 是什么意思
+
+FINAL RESULT:
+在 Python 中，`exponent=2` 是函数定义中的默认参数，表示调用函数时如果没有显式传入 `exponent`，就自动使用值 `2`。
+
+例如：
+def power(base, exponent=2):
+    return base ** exponent
+
+- power(5) 等价于 power(5, 2)
+- power(5, 3) 会覆盖默认值
+
+知识来源引用:
+- python_base.md | python_base > Python 基础 > Python 函数基础 | Chunk 2/3
 ```
 
-### 4. 使用分支管理
+### 5. 再试一个层级 RAG 问题
 
-```python
-from state.session import Session
-from state.branch import branch_manager
-
-session = Session()
-
-# 创建分支
-branch_manager.create_branch("feature-branch", session)
-
-# 切换分支
-new_session = branch_manager.switch_branch("feature-branch")
+```text
+用户 (kn知识, config配置, cp快照, br分支, mem记忆, swarm蜂群, q退出)> Python 描述符协议是做什么的
 ```
 
-### 5. 使用蜂群模式
+这类问题会优先命中 `python_advanced.md` 中对应的标题章节，再从该章节下召回最相关的子块进行回答。
 
-```python
-from swarm.planner import MapReducePlanner
-from swarm.scheduler import SwarmScheduler
+### 6. MCP 配置示例
 
-# 分解任务
-subtasks = MapReducePlanner.decompose("分析项目代码结构")
+项目支持通过 `mcpServers.<name>.url` 自动连接多个 MCP Server：
 
-# 并行执行
-scheduler = SwarmScheduler(max_workers=5)
-results = scheduler.run_batch(subtasks, session)
+```yaml
+mcpServers:
+  baidu-maps:
+    url: https://mcp.map.baidu.com/mcp?ak=${BAIDU_MAPS_MCP_AK}
 ```
 
-### 6. 使用渐进式披露技能
-
-```python
-from skill import SkillManager, DisclosureLevel
-
-manager = SkillManager("skills")
-manager.initialize()
-
-# 按级别获取技能信息
-brief = manager.get_skill_disclosed("pdf", DisclosureLevel.BRIEF)
-detailed = manager.get_skill_disclosed("pdf", DisclosureLevel.DETAILED)
-```
-
-### 7. 使用安全系统
-
-```python
-from common.security import SecurityManager
-
-security = SecurityManager(current_role="user")
-
-# 检查权限
-if security.can_use_tool("bash"):
-    # 执行操作
-    pass
-
-# 授权检查
-allowed, reason = security.check_authorization("write", "/etc/passwd")
-```
-
-### 8. 使用知识管理
-
-```python
-from knowledge import knowledge_manager
-
-# 索引文件
-knowledge_manager.index_file("document.pdf")
-
-# 搜索知识
-results = knowledge_manager.search("Python 装饰器", top_k=5)
-```
-
-### 9. 使用 MCP 工具
-
-```python
-from mcp.registry import registry
-
-# 连接 MCP Server
-registry.connect_mcp_server("http://localhost:8000/mcp")
-
-# 查看可用工具
-tools = registry.list_all_tools()
-```
-
-支持多个 MCP Server，按 `mcpServers.<name>.url` 配置；客户端会先执行标准 MCP 初始化，再自动发现工具。
+启动 `main.py` 时会自动完成标准 MCP 初始化并注册远程工具。
 
 ---
 
@@ -269,7 +244,9 @@ tools = registry.list_all_tools()
     ↓
 ContextAssembler (Token 预算分配)
     ↓
-MemoryManager (分层记忆检索)
+MemoryManager (分层记忆视图)
+    ↓
+KnowledgeManager (层级 RAG 检索 + 来源引用)
     ↓
 LLM API Call
     ↓
@@ -315,15 +292,32 @@ Session (状态更新)
 ### 环境变量
 
 ```bash
-# LLM 配置
+# 必需：主对话与 embedding
 export DASHSCOPE_API_KEY="your-api-key"
+
+# 可选：覆盖默认模型
 export LLM_MODEL="qwen-plus"
 
-# 可选配置
-export MAX_RECURSION_DEPTH=10
-export MAX_TOTAL_TOKENS=8000
+# 可选：接入百度地图 MCP 时使用
+export BAIDU_MAPS_MCP_AK="your-baidu-ak"
+
+# 可选：调试模式
 export DEBUG=true
 ```
+
+Windows PowerShell 永久写入示例：
+
+```powershell
+[System.Environment]::SetEnvironmentVariable("DASHSCOPE_API_KEY", "your-api-key", "User")
+[System.Environment]::SetEnvironmentVariable("LLM_MODEL", "qwen-plus", "User")
+[System.Environment]::SetEnvironmentVariable("BAIDU_MAPS_MCP_AK", "your-baidu-ak", "User")
+```
+
+当前项目代码中，以下环境变量会被直接读取：
+- `DASHSCOPE_API_KEY`：优先级高于配置文件
+- `LLM_MODEL`：优先级高于配置文件
+- `DEBUG`：开启调试模式
+- `BAIDU_MAPS_MCP_AK`：供 `agent_config.yaml` 中的 `${BAIDU_MAPS_MCP_AK}` 展开使用
 
 ### 配置文件
 
@@ -361,6 +355,16 @@ mcpServers:
   baidu-maps:
     url: https://mcp.map.baidu.com/mcp?ak=${BAIDU_MAPS_MCP_AK}
 ```
+
+### 知识库目录约定
+
+- 默认知识目录是 `knowledge/library`
+- 推荐使用 Markdown 标题组织知识，例如 `# / ## / ###`
+- 同步后会自动：
+  - 解析标题层级
+  - 建立 section/chunk 父子关系
+  - 在对话时先做层级 RAG 检索，再把结果注入 Prompt
+  - 在最终回答末尾追加来源引用
 
 ---
 
