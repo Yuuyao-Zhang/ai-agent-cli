@@ -1,0 +1,22 @@
+llm:
+  api_key: null
+  model: qwen-plus
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
+  embedding_url: https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings
+  temperature: 0.7
+  max_tokens: null
+
+security:
+  trusted_domains: null
+  acl_config: null
+
+app:
+  todo_storage_path: .todos.json
+  debug_mode: false
+  log_level: INFO
+  checkpoint_dir: checkpoints
+  vector_db_dir: vectordb
+
+mcpServers:
+  baidu-maps:
+    url: https://mcp.map.baidu.com/mcp?ak=${BAIDU_MAPS_MCP_AK}
