@@ -8,7 +8,7 @@ import re
 import time
 from typing import List, Dict, Optional, Tuple
 from state.session import Session
-from common.constant import MAX_TOTAL_TOKENS_PER_AGENT
+from common.config import config
 from llm.context import estimate_tokens
 from llm.llm import call_qwen
 from engine.hooks import HookChain, HookContext, HookType
@@ -78,7 +78,7 @@ class UnifiedMemoryManager:
         self.summary_interval = 10  # 每10轮生成一次摘要
 
         # 初始化三层记忆存储
-        self.short_term = ShortTermStore(max_rounds=20)
+        self.short_term = ShortTermStore(max_rounds=config.app.max_turns_per_agent)
         self.mid_term = MidTermStore(
             db_path=os.path.join(self.storage_dir, f"memory_{self.session_id}_mid.db")
         )
@@ -100,7 +100,7 @@ class UnifiedMemoryManager:
         Returns:
             最大Token数
         """
-        return MAX_TOTAL_TOKENS_PER_AGENT
+        return config.app.max_total_tokens_per_agent
 
     def set_llm_client(self, client):
         """设置LLM客户端.

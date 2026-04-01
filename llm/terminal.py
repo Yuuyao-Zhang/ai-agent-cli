@@ -6,7 +6,7 @@
 
 from collections import deque
 
-from common.constant import MAX_BUFFER_LINES
+from common.config import config
 
 
 class TerminalBuffer:
@@ -18,12 +18,14 @@ class TerminalBuffer:
         buffer: 存储终端输出的双端队列
     """
 
-    def __init__(self, max_lines: int = MAX_BUFFER_LINES):
+    def __init__(self, max_lines: int = None):
         """初始化终端缓冲区.
 
         Args:
-            max_lines: 缓冲区最大行数，默认为 MAX_BUFFER_LINES
+            max_lines: 缓冲区最大行数，默认为 config.app.max_buffer_lines
         """
+        if max_lines is None:
+            max_lines = config.app.max_buffer_lines
         self.buffer = deque(maxlen=max_lines)
 
     def write(self, text: str) -> None:

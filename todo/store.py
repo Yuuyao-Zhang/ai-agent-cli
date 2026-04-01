@@ -123,7 +123,7 @@ class ToDoStore:
         Args:
             storage_path: 存储文件路径，默认从配置获取
         """
-        self.storage_path = storage_path or config.get_todo_storage_path()
+        self.storage_path = storage_path or config.app.todo_storage_path
         self.history: List[ToDoList] = []
         self.current_list: ToDoList = ToDoList()
         self._next_id: int = 1

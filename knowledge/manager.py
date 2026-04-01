@@ -28,7 +28,7 @@ class KnowledgeManager:
         Args:
             storage_dir: 向量数据库存储目录
         """
-        self.storage_dir = storage_dir or config.get_vector_db_dir()
+        self.storage_dir = storage_dir or config.app.vector_db_dir
         self.vector_db = VectorDatabase(self.storage_dir)
         self.default_knowledge_dir = Path(__file__).resolve().parent / "library"
         if auto_sync_paths is None:

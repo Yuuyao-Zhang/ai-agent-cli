@@ -1,213 +1,288 @@
-"""配置管理模块.
+"""配置文件管理模块.
 
-该模块统一管理所有环境变量配置和配置文件，提供统一的配置访问接口。
-配置优先级：环境变量 > 配置文件 > 默认值
+该模块支持从 YAML 配置文件加载配置，同时保留环境变量支持。
+配置加载优先级：环境变量 > 配置文件 > 默认值
 """
 
 import os
-from typing import Optional
+import json
+import re
+from typing import Any, Dict, Optional, Union
+from dataclasses import dataclass, field
+from pathlib import Path
 
 try:
-    from common.config_file import config_file_manager
-    CONFIG_FILE_AVAILABLE = True
+    import yaml
+    YAML_AVAILABLE = True
 except ImportError:
-    CONFIG_FILE_AVAILABLE = False
+    YAML_AVAILABLE = False
 
 
-class Config:
-    """配置类.
+@dataclass
+class LLMConfig:
+    """LLM 配置."""
+    api_key: Optional[str] = None
+    model: str = "qwen-plus"
+    base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    embedding_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
+    temperature: float = 0.7
+    max_tokens: Optional[int] = None
+    max_retries: int = 3
+    retry_delay: float = 1.0
+    timeout: int = 60
 
-    统一管理所有环境变量配置和配置文件，提供类型安全的访问方法。
-    所有配置项都有默认值，确保在没有设置环境变量时也能正常工作。
 
-    配置优先级：
-        1. 环境变量
-        2. 配置文件 (YAML)
-        3. 默认值
+@dataclass
+class ContextConfig:
+    """上下文占比配置."""
+    system_ratio: float = 0.2
+    history_ratio: float = 0.6
+    file_tree_ratio: float = 0.05
+    terminal_ratio: float = 0.05
+    dynamic_ratio: float = 0.1
 
-    Attributes:
-        无实例属性，所有方法均为静态方法
-    """
 
-    # ==================== LLM 配置 ====================
+@dataclass
+class SecurityConfig:
+    """安全配置."""
+    trusted_domains: Optional[str] = None
+    acl_config: Optional[str] = None
+
+
+@dataclass
+class AppConfig:
+    """应用配置."""
+    todo_storage_path: str = ".todos.json"
+    debug_mode: bool = False
+    log_level: str = "INFO"
+    checkpoint_dir: str = "checkpoints"
+    vector_db_dir: str = "vectordb"
+    max_recursion_depth: int = 10
+    max_turns_per_agent: int = 20
+    max_buffer_lines: int = 50
+    max_total_tokens_per_agent: int = 8000
+    file_tree_max_depth: int = 3
+    file_tree_max_lines: int = 50
+    file_ref_truncate_length: int = 500
+    recent_file_ops_limit: int = 5
+    terminal_output_lines: int = 20
+
+
+@dataclass
+class MCPConfig:
+    """MCP 服务器配置."""
+    servers: list[str] = field(default_factory=list)
+
+
+@dataclass
+class IntentConfig:
+    """意图识别配置."""
+    enabled: bool = True
+    model: Optional[str] = None
+    prompt: Optional[str] = None
+
+
+@dataclass
+class ConfigFile:
+    """完整配置文件结构."""
+    llm: LLMConfig = field(default_factory=LLMConfig)
+    context: ContextConfig = field(default_factory=ContextConfig)
+    security: SecurityConfig = field(default_factory=SecurityConfig)
+    app: AppConfig = field(default_factory=AppConfig)
+    mcp: MCPConfig = field(default_factory=MCPConfig)
+    intent: IntentConfig = field(default_factory=IntentConfig)
+
+
+class ConfigFileManager:
+    """配置文件管理器."""
+
+    DEFAULT_CONFIG_PATHS = [
+        "agent_config.yaml",
+        "agent_config.yml",
+        ".agent_config.yaml",
+        "config/agent_config.yaml",
+    ]
+
+    def __init__(self, config_path: Optional[str] = None):
+        """初始化配置管理器.
+
+        Args:
+            config_path: 配置文件路径，如果为 None 则自动查找
+        """
+        self.config_path = self._find_config_file(config_path, self.DEFAULT_CONFIG_PATHS)
+        self._config: Optional[ConfigFile] = None
+        self._load_config()
+
     @staticmethod
-    def get_llm_api_key() -> Optional[str]:
-        """获取 LLM API 密钥.
+    def _find_config_file(config_path: Optional[str], default_paths: list) -> Optional[Path]:
+        """查找配置文件.
 
-        优先级：环境变量 DASHSCOPE_API_KEY > 配置文件 > None
+        Args:
+            config_path: 指定的配置文件路径
+            default_paths: 默认配置文件路径列表
 
         Returns:
-            API 密钥字符串，如果未设置则返回 None
+            找到的配置文件路径，如果没找到则返回 None
         """
-        env_key = os.environ.get("DASHSCOPE_API_KEY")
-        if env_key:
-            return env_key
-        if CONFIG_FILE_AVAILABLE:
-            return config_file_manager.config.llm.api_key
+        if config_path:
+            path = Path(config_path)
+            if path.exists():
+                return path
+            return None
+
+        for path_str in default_paths:
+            path = Path(path_str)
+            if path.exists():
+                return path
+
         return None
 
-    @staticmethod
-    def get_llm_model() -> str:
-        """获取 LLM 模型名称.
+    def _load_config(self):
+        """加载配置文件."""
+        if not self.config_path:
+            self._config = ConfigFile()
+            return
 
-        优先级：环境变量 LLM_MODEL > 配置文件 > "qwen-plus"
+        if not YAML_AVAILABLE:
+            print("[Warning] PyYAML not available, using default config")
+            self._config = ConfigFile()
+            return
 
-        Returns:
-            模型名称
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+
+            llm_data = data.get("llm", {})
+            context_data = data.get("context", {})
+            security_data = data.get("security", {})
+            app_data = data.get("app", {})
+            mcp_servers_data = data.get("mcpServers", {})
+            intent_data = data.get("intent", {})
+
+            alias_servers: list[str] = []
+            if isinstance(mcp_servers_data, dict):
+                for server_value in mcp_servers_data.values():
+                    if isinstance(server_value, dict):
+                        server_url = server_value.get("url")
+                    else:
+                        server_url = server_value
+                    if isinstance(server_url, str):
+                        server_url = server_url.strip().strip("`").strip()
+                        server_url = re.sub(
+                            r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}",
+                            lambda match: os.getenv(match.group(1), ""),
+                            server_url,
+                        ).strip()
+                        if server_url:
+                            alias_servers.append(server_url)
+
+            mcp_data = {"servers": list(dict.fromkeys(alias_servers))}
+
+            self._config = ConfigFile(
+                llm=LLMConfig(**llm_data),
+                context=ContextConfig(**context_data),
+                security=SecurityConfig(**security_data),
+                app=AppConfig(**app_data),
+                mcp=MCPConfig(**mcp_data),
+                intent=IntentConfig(**intent_data),
+            )
+            self._apply_env_overrides()
+        except Exception as e:
+            print(f"[Warning] Failed to load config file: {e}, using default config")
+            self._config = ConfigFile()
+            self._apply_env_overrides()
+
+    def _apply_env_overrides(self):
+        """应用环境变量覆盖配置."""
+        if not self._config:
+            return
+
+        # LLM
+        if "DASHSCOPE_API_KEY" in os.environ:
+            self._config.llm.api_key = os.environ["DASHSCOPE_API_KEY"]
+        if "LLM_MODEL" in os.environ:
+            self._config.llm.model = os.environ["LLM_MODEL"]
+        if "LLM_BASE_URL" in os.environ:
+            self._config.llm.base_url = os.environ["LLM_BASE_URL"]
+        if "LLM_EMBEDDING_URL" in os.environ:
+            self._config.llm.embedding_url = os.environ["LLM_EMBEDDING_URL"]
+
+        # Security
+        if "TRAE_TRUSTED_DOMAINS" in os.environ:
+            self._config.security.trusted_domains = os.environ["TRAE_TRUSTED_DOMAINS"]
+        if "TRAE_ACL" in os.environ:
+            self._config.security.acl_config = os.environ["TRAE_ACL"]
+
+        # App
+        if "TRAE_TODO_PATH" in os.environ:
+            self._config.app.todo_storage_path = os.environ["TRAE_TODO_PATH"]
+        if "DEBUG" in os.environ:
+            self._config.app.debug_mode = os.environ["DEBUG"].lower() in ("1", "true", "yes")
+        if "LOG_LEVEL" in os.environ:
+            self._config.app.log_level = os.environ["LOG_LEVEL"].upper()
+        if "CHECKPOINT_DIR" in os.environ:
+            self._config.app.checkpoint_dir = os.environ["CHECKPOINT_DIR"]
+        if "VECTOR_DB_DIR" in os.environ:
+            self._config.app.vector_db_dir = os.environ["VECTOR_DB_DIR"]
+
+    def reload(self):
+        """重新加载配置文件（热重载）."""
+        self._load_config()
+
+    @property
+    def config(self) -> ConfigFile:
+        """获取配置对象."""
+        return self._config
+
+    def create_default_config(self, path: str = "agent_config.yaml"):
+        """创建默认配置文件.
+
+        Args:
+            path: 配置文件路径
         """
-        env_model = os.environ.get("LLM_MODEL")
-        if env_model:
-            return env_model
-        if CONFIG_FILE_AVAILABLE:
-            return config_file_manager.config.llm.model
-        return "qwen-plus"
+        if not YAML_AVAILABLE:
+            print("[Error] PyYAML not available, cannot create config file")
+            return
 
-    @staticmethod
-    def get_llm_base_url() -> str:
-        """获取 LLM API 基础 URL.
+        default_config = ConfigFile()
+        data = {
+            "llm": {
+                "api_key": None,
+                "model": default_config.llm.model,
+                "base_url": default_config.llm.base_url,
+                "embedding_url": default_config.llm.embedding_url,
+                "temperature": default_config.llm.temperature,
+                "max_tokens": None,
+            },
+            "security": {
+                "trusted_domains": None,
+                "acl_config": None,
+            },
+            "app": {
+                "todo_storage_path": default_config.app.todo_storage_path,
+                "debug_mode": default_config.app.debug_mode,
+                "log_level": default_config.app.log_level,
+                "checkpoint_dir": default_config.app.checkpoint_dir,
+                "vector_db_dir": default_config.app.vector_db_dir,
+            },
+            "mcpServers": {
+                "example-server": {
+                    "url": "http://localhost:8000/mcp"
+                }
+            },
+            "intent": {
+                "enabled": True,
+                "model": None,
+                "prompt": None,
+            }
+        }
 
-        优先级：环境变量 LLM_BASE_URL > 配置文件 > 默认值
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
-        Returns:
-            API 基础 URL
-        """
-        env_url = os.environ.get("LLM_BASE_URL")
-        if env_url:
-            return env_url
-        if CONFIG_FILE_AVAILABLE:
-            return config_file_manager.config.llm.base_url
-        return "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-
-    @staticmethod
-    def get_llm_embedding_url() -> str:
-        """获取 LLM Embedding API URL.
-
-        优先级：环境变量 LLM_EMBEDDING_URL > 配置文件 > 默认值
-
-        Returns:
-            Embedding API URL
-        """
-        env_url = os.environ.get("LLM_EMBEDDING_URL")
-        if env_url:
-            return env_url
-        if CONFIG_FILE_AVAILABLE:
-            return config_file_manager.config.llm.embedding_url
-        return "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
-
-    # ==================== 安全策略配置 ====================
-    @staticmethod
-    def get_trusted_domains() -> Optional[str]:
-        """获取可信域名列表.
-
-        优先级：环境变量 TRAE_TRUSTED_DOMAINS > 配置文件 > None
-
-        Returns:
-            逗号分隔的域名列表，如果未设置则返回 None
-        """
-        env_domains = os.environ.get("TRAE_TRUSTED_DOMAINS")
-        if env_domains:
-            return env_domains
-        if CONFIG_FILE_AVAILABLE:
-            return config_file_manager.config.security.trusted_domains
-        return None
-
-    @staticmethod
-    def get_acl_config() -> Optional[str]:
-        """获取 ACL 配置 JSON 字符串.
-
-        优先级：环境变量 TRAE_ACL > 配置文件 > None
-
-        Returns:
-            ACL 配置的 JSON 字符串，如果未设置则返回 None
-        """
-        env_acl = os.environ.get("TRAE_ACL")
-        if env_acl:
-            return env_acl
-        if CONFIG_FILE_AVAILABLE:
-            return config_file_manager.config.security.acl_config
-        return None
-
-    # ==================== 应用配置 ====================
-    @staticmethod
-    def get_todo_storage_path() -> str:
-        """获取 To-do 存储文件路径.
-
-        优先级：环境变量 TRAE_TODO_PATH > 配置文件 > ".todos.json"
-
-        Returns:
-            存储文件路径
-        """
-        env_path = os.environ.get("TRAE_TODO_PATH")
-        if env_path:
-            return env_path
-        if CONFIG_FILE_AVAILABLE:
-            return config_file_manager.config.app.todo_storage_path
-        return ".todos.json"
-
-    @staticmethod
-    def is_debug_mode() -> bool:
-        """检查是否处于调试模式.
-
-        优先级：环境变量 DEBUG > 配置文件 > False
-
-        Returns:
-            如果 DEBUG 设置为 "1", "true" 或 "yes" 则返回 True
-        """
-        env_debug = os.environ.get("DEBUG", "").lower()
-        if env_debug in ("1", "true", "yes"):
-            return True
-        if CONFIG_FILE_AVAILABLE:
-            return config_file_manager.config.app.debug_mode
-        return False
-
-    @staticmethod
-    def get_log_level() -> str:
-        """获取日志级别.
-
-        优先级：环境变量 LOG_LEVEL > 配置文件 > "INFO"
-
-        Returns:
-            日志级别
-        """
-        env_level = os.environ.get("LOG_LEVEL")
-        if env_level:
-            return env_level.upper()
-        if CONFIG_FILE_AVAILABLE:
-            return config_file_manager.config.app.log_level.upper()
-        return "INFO"
-
-    @staticmethod
-    def get_checkpoint_dir() -> str:
-        """获取快照存储目录.
-
-        优先级：环境变量 > 配置文件 > "checkpoints"
-
-        Returns:
-            快照存储目录
-        """
-        env_dir = os.environ.get("CHECKPOINT_DIR")
-        if env_dir:
-            return env_dir
-        if CONFIG_FILE_AVAILABLE:
-            return config_file_manager.config.app.checkpoint_dir
-        return "checkpoints"
-
-    @staticmethod
-    def get_vector_db_dir() -> str:
-        """获取向量数据库存储目录.
-
-        优先级：环境变量 > 配置文件 > "vectordb"
-
-        Returns:
-            向量数据库存储目录
-        """
-        env_dir = os.environ.get("VECTOR_DB_DIR")
-        if env_dir:
-            return env_dir
-        if CONFIG_FILE_AVAILABLE:
-            return config_file_manager.config.app.vector_db_dir
-        return "vectordb"
+        print(f"Default config file created at: {path}")
 
 
-# 全局配置实例
-config = Config()
+# 全局配置文件管理器和配置实例
+config_file_manager = ConfigFileManager()
+config = config_file_manager.config

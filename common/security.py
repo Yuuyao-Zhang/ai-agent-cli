@@ -12,10 +12,15 @@ from urllib.parse import urlparse
 
 from common.config import config
 from common.constant import (
-    DEFAULT_TRUSTED_DOMAINS,
-    RISK_SAFE, RISK_LOW, RISK_MEDIUM, RISK_HIGH, RISK_CRITICAL,
-    PERM_READ, PERM_WRITE, PERM_EXEC,
-    SENSITIVE_PATH_PATTERNS
+    PERM_EXEC,
+    PERM_READ,
+    PERM_WRITE,
+    RISK_CRITICAL,
+    RISK_HIGH,
+    RISK_LOW,
+    RISK_MEDIUM,
+    RISK_SAFE,
+    SENSITIVE_PATH_PATTERNS,
 )
 from common.io_utils import input_request
 
@@ -32,7 +37,20 @@ class URISecurityPolicy:
         Args:
             allowed_domains: 可信域名集合
         """
-        env_domains = config.get_trusted_domains()
+        # 默认可信域名
+        default_domains = {
+            "github.com",
+            "gitee.com",
+            "pypi.org",
+            "python.org",
+            "stackoverflow.com",
+            "google.com",
+            "baidu.com",
+            "raw.githubusercontent.com"
+        }
+
+        env_domains = config.security.trusted_domains
+
         if env_domains:
             env_domains_set = set(d.strip() for d in env_domains.split(',') if d.strip())
             if allowed_domains:
@@ -40,7 +58,7 @@ class URISecurityPolicy:
             else:
                 allowed_domains = env_domains_set
 
-        self.allowed_domains = allowed_domains or DEFAULT_TRUSTED_DOMAINS
+        self.allowed_domains = allowed_domains or default_domains
 
     def is_allowed(self, uri: str) -> bool:
         """检查 URI 是否在白名单中.
@@ -155,7 +173,7 @@ class SecurityManager:
         }
 
         # 尝试从环境变量加载自定义 ACL 矩阵
-        env_acl = config.get_acl_config()
+        env_acl = config.security.acl_config
         if env_acl:
             try:
                 custom_acl = json.loads(env_acl)

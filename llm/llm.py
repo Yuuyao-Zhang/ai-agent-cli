@@ -13,7 +13,6 @@ import urllib.request
 from typing import List, Dict
 
 from common.config import config
-from common.constant import LLM_MAX_RETRIES
 from common.io_utils import safe_text
 
 # 引入语义 KV-Cache
@@ -131,9 +130,9 @@ def call_qwen(
             return cached_response
 
     # 配置加载优先级：参数 > 环境变量 > 默认值
-    model = model or config.get_llm_model()
-    base_url = base_url or config.get_llm_base_url()
-    api_key = api_key or config.get_llm_api_key()
+    model = model or config.llm.model
+    base_url = base_url or config.llm.base_url
+    api_key = api_key or config.llm.api_key
 
     if not api_key:
         print(
@@ -162,7 +161,7 @@ def call_qwen(
         base_url, data=data, headers=headers, method="POST"
     )
 
-    for attempt in range(LLM_MAX_RETRIES):
+    for attempt in range(config.llm.max_retries):
         try:
             with urllib.request.urlopen(req) as response:
                 if stream:
@@ -238,9 +237,9 @@ def call_qwen(
                 )
                 return ""
             # 服务器错误 (500, 502, 503, 504) 可以重试
-            if attempt == LLM_MAX_RETRIES - 1:
+            if attempt == config.llm.max_retries - 1:
                 print(
-                    f"[LLM Error] Request failed after {LLM_MAX_RETRIES} "
+                    f"[LLM Error] Request failed after {config.llm.max_retries} "
                     f"attempts: {e}",
                     file=sys.stderr
                 )
@@ -250,9 +249,9 @@ def call_qwen(
             wait_time = 2 ** attempt
             time.sleep(wait_time)
         except urllib.error.URLError as e:
-            if attempt == LLM_MAX_RETRIES - 1:
+            if attempt == config.llm.max_retries - 1:
                 print(
-                    f"[LLM Error] Request failed after {LLM_MAX_RETRIES} "
+                    f"[LLM Error] Request failed after {config.llm.max_retries} "
                     f"attempts: {e}",
                     file=sys.stderr
                 )
@@ -287,8 +286,8 @@ def call_qwen_embedding(
     Returns:
         文本的向量表示列表，失败时返回空列表
     """
-    embedding_url = embedding_url or config.get_llm_embedding_url()
-    api_key = api_key or config.get_llm_api_key()
+    embedding_url = embedding_url or config.llm.embedding_url
+    api_key = api_key or config.llm.api_key
 
     if not api_key:
         print(
@@ -310,7 +309,7 @@ def call_qwen_embedding(
         embedding_url, data=data, headers=headers, method="POST"
     )
 
-    for attempt in range(LLM_MAX_RETRIES):
+    for attempt in range(config.llm.max_retries):
         try:
             with urllib.request.urlopen(req) as response:
                 result = json.loads(response.read().decode("utf-8"))
@@ -328,9 +327,9 @@ def call_qwen_embedding(
                     file=sys.stderr
                 )
                 return []
-            if attempt == LLM_MAX_RETRIES - 1:
+            if attempt == config.llm.max_retries - 1:
                 print(
-                    f"[LLM Error] Embedding request failed after {LLM_MAX_RETRIES} "
+                    f"[LLM Error] Embedding request failed after {config.llm.max_retries} "
                     f"attempts: {e}",
                     file=sys.stderr
                 )
@@ -338,9 +337,9 @@ def call_qwen_embedding(
             wait_time = 2 ** attempt
             time.sleep(wait_time)
         except urllib.error.URLError as e:
-            if attempt == LLM_MAX_RETRIES - 1:
+            if attempt == config.llm.max_retries - 1:
                 print(
-                    f"[LLM Error] Embedding request failed after {LLM_MAX_RETRIES} "
+                    f"[LLM Error] Embedding request failed after {config.llm.max_retries} "
                     f"attempts: {e}",
                     file=sys.stderr
                 )

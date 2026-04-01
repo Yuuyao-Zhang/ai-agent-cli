@@ -1,34 +1,8 @@
 """常量配置模块.
 
-该模块定义了 v3 Agent 系统的各种常量配置，包括递归深度限制、
-每 Agent 最大回合数、缓冲区大小限制以及 Token 预算等。
-所有配置值都在这里集中管理，便于统一调整。
+该模块定义了系统的核心不可变常量。
+可配置的参数（如 Token 限制、超时时间等）已迁移至 config.yaml 中。
 """
-
-# ==================== Agent 行为限制 ====================
-# 防止资源耗尽和无限循环
-MAX_RECURSION_DEPTH: int = 10
-MAX_TURNS_PER_AGENT: int = 20
-
-# ==================== 缓冲区与 Token 限制 ====================
-# 管理内存使用和 API 调用
-MAX_BUFFER_LINES: int = 50
-MAX_TOTAL_TOKENS_PER_AGENT: int = 8000
-
-# ==================== 上下文配置比例 ====================
-# 构建上下文时的占比分配
-SYSTEM_RATIO: float = 0.2
-HISTORY_RATIO: float = 0.6
-FILE_TREE_RATIO: float = 0.05
-TERMINAL_RATIO: float = 0.05
-DYNAMIC_RATIO: float = 0.1
-
-# ==================== 文件操作限制 ====================
-# 限制文件系统操作的资源消耗
-FILE_TREE_MAX_DEPTH: int = 3
-FILE_TREE_MAX_LINES: int = 50
-FILE_REF_TRUNCATE_LENGTH: int = 500
-RECENT_FILE_OPS_LIMIT: int = 5
 
 # ==================== 安全策略常量 ====================
 # 风险等级、权限控制和访问限制
@@ -104,12 +78,6 @@ INCOMPLETE_MARKERS: list[str] = [
 
 MIN_RESPONSE_LENGTH: int = 10
 
-# ==================== LLM 配置默认值 ====================
-# 与 LLM API 交互的配置
-LLM_MAX_RETRIES: int = 3
-LLM_RETRY_DELAY: float = 1.0
-LLM_TIMEOUT: int = 60
-
 # ==================== 应用配置 ====================
 # 应用程序的通用配置
 IGNORED_DIRS: set[str] = {
@@ -120,6 +88,3 @@ IGNORED_FILE_PREFIX: str = "."
 
 # Token 估算比例（字符数 / Token 数）
 TOKEN_ESTIMATE_RATIO: int = 4
-
-# 终端输出行数限制
-TERMINAL_OUTPUT_LINES: int = 20

@@ -42,7 +42,7 @@ class Logger:
         self.logger.setLevel(logging.DEBUG)
         self.logger.handlers.clear()
 
-        log_level = getattr(logging, config.get_log_level(), logging.INFO)
+        log_level = getattr(logging, config.app.log_level, logging.INFO)
 
         # 控制台输出格式
         console_format = logging.Formatter(

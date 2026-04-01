@@ -8,30 +8,31 @@ import os
 import re
 from typing import List
 
-from common.constant import (
-    FILE_TREE_MAX_DEPTH,
-    FILE_TREE_MAX_LINES,
-    FILE_REF_TRUNCATE_LENGTH,
-    IGNORED_DIRS,
-    IGNORED_FILE_PREFIX
-)
+from common.config import config
+from common.constant import IGNORED_DIRS, IGNORED_FILE_PREFIX
 
 
 def get_file_tree(
     root_dir: str = ".",
-    max_depth: int = FILE_TREE_MAX_DEPTH,
-    max_lines: int = FILE_TREE_MAX_LINES
+    max_depth: int = None,
+    max_lines: int = None
 ) -> str:
-    """递归生成目录树字符串，包含文件路径和文件名.
+    """生成项目文件树.
+
+    过滤常见忽略目录和前缀。
 
     Args:
-        root_dir: 根目录路径 (默认当前目录)
-        max_depth: 最大递归深度 (默认 FILE_TREE_MAX_DEPTH)
-        max_lines: 最大行数限制 (默认 FILE_TREE_MAX_LINES)
+        root_dir: 根目录路径
+        max_depth: 最大扫描深度
+        max_lines: 最大输出行数
 
     Returns:
-        目录树字符串，每个目录或文件占一行，包含相对路径
+        文件树字符串
     """
+    if max_depth is None:
+        max_depth = config.app.file_tree_max_depth
+    if max_lines is None:
+        max_lines = config.app.file_tree_max_lines
     tree_lines = []
 
     def _walk(path: str, depth: int, prefix: str = ""):
@@ -103,8 +104,9 @@ def resolve_file_ref(text: str, root_dir: str = ".") -> List[str]:
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     content = f.read()
-                if len(content) > FILE_REF_TRUNCATE_LENGTH:
-                    summary = content[:FILE_REF_TRUNCATE_LENGTH] + "\n...[Truncated]"
+                limit = config.app.file_ref_truncate_length
+                if len(content) > limit:
+                    summary = content[:limit] + "\n...[Truncated]"
                 else:
                     summary = content
                 results.append(f"File Reference '{filename}':\n{summary}")

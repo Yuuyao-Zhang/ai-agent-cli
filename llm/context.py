@@ -9,18 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List
 
-from common.constant import (
-    DYNAMIC_RATIO,
-    FILE_TREE_MAX_DEPTH,
-    FILE_TREE_MAX_LINES,
-    HISTORY_RATIO,
-    MAX_TOTAL_TOKENS_PER_AGENT,
-    RECENT_FILE_OPS_LIMIT,
-    SYSTEM_RATIO,
-    TERMINAL_OUTPUT_LINES,
-    FILE_TREE_RATIO,
-    TERMINAL_RATIO
-)
+from common.config import config
 from common.file_index import get_file_tree
 from knowledge import knowledge_manager
 from mcp.registry import registry
@@ -43,15 +32,22 @@ class ContextConfig:
         dynamic_ratio: 动态内容占比，留给 @file 引用等动态内容
     """
 
-    max_total_tokens: int = MAX_TOTAL_TOKENS_PER_AGENT
-    system_ratio: float = SYSTEM_RATIO
-    history_ratio: float = HISTORY_RATIO
-    file_tree_ratio: float = FILE_TREE_RATIO
-    terminal_ratio: float = TERMINAL_RATIO
-    dynamic_ratio: float = DYNAMIC_RATIO
+    max_total_tokens: int = None
+    system_ratio: float = None
+    history_ratio: float = None
+    file_tree_ratio: float = None
+    terminal_ratio: float = None
+    dynamic_ratio: float = None
 
     def __post_init__(self):
-        """初始化后验证配置有效性."""
+        """初始化后验证配置有效性，并动态获取配置."""
+        self.max_total_tokens = self.max_total_tokens if self.max_total_tokens is not None else config.app.max_total_tokens_per_agent
+        self.system_ratio = self.system_ratio if self.system_ratio is not None else config.context.system_ratio
+        self.history_ratio = self.history_ratio if self.history_ratio is not None else config.context.history_ratio
+        self.file_tree_ratio = self.file_tree_ratio if self.file_tree_ratio is not None else config.context.file_tree_ratio
+        self.terminal_ratio = self.terminal_ratio if self.terminal_ratio is not None else config.context.terminal_ratio
+        self.dynamic_ratio = self.dynamic_ratio if self.dynamic_ratio is not None else config.context.dynamic_ratio
+
         total_ratio = (
             self.system_ratio
             + self.history_ratio
@@ -88,18 +84,19 @@ def estimate_tokens(text: str) -> int:
     return int(chinese_chars / 1.5 + non_chinese_tokens / 4)
 
 
-def get_recent_file_ops(session: Session, limit: int = RECENT_FILE_OPS_LIMIT) -> str:
+def get_recent_file_ops(session: Session, limit: int = None) -> str:
     """提取最近成功的文件操作记录.
 
     通过扫描历史消息中的工具反馈来获取。
 
     Args:
         session: 当前会话对象
-        limit: 返回的最大记录数，默认为 RECENT_FILE_OPS_LIMIT
+        limit: 返回的最大记录数，默认为 config.app.recent_file_ops_limit
 
     Returns:
         格式化的文件操作记录字符串，如果没有记录则返回空字符串
     """
+    limit = limit or config.app.recent_file_ops_limit
     ops = []
     count = 0
     for msg in reversed(session.history):
@@ -161,8 +158,9 @@ def get_available_mcp_tools_text(limit: int = 20) -> str:
     return "\n".join(lines) + "\n"
 
 
-def get_recent_file_paths(session: Session, limit: int = RECENT_FILE_OPS_LIMIT) -> List[str]:
+def get_recent_file_paths(session: Session, limit: int = None) -> List[str]:
     """提取最近涉及的文件路径."""
+    limit = limit or config.app.recent_file_ops_limit
     paths: List[str] = []
     seen = set()
 
@@ -335,7 +333,22 @@ def build_dynamic_context(
     context_parts = ["\n[Additional Context]:"]
     used_tokens = estimate_tokens(context_parts[0])
 
-    if used_tokens < remaining_budget:
+    intent_cache = session.get("_intent_cache")
+    if isinstance(intent_cache, dict) and intent_cache.get("task") == task:
+        need_rag = intent_cache.get("need_rag", True)
+        need_skill = intent_cache.get("need_skill", True)
+    else:
+        from llm.intent import recognize_intent
+        print("\n[意图识别] 正在分析任务...")
+        need_rag, need_skill = recognize_intent(task)
+        session.set("_intent_cache", {
+            "task": task,
+            "need_rag": need_rag,
+            "need_skill": need_skill
+        })
+        print(f"[意图识别] 结果: RAG={need_rag}, Skill={need_skill}\n")
+
+    if used_tokens < remaining_budget and need_skill:
         skill_text = get_cached_skill_context(task, session)
         if skill_text:
             skill_block = f"\n{skill_text}\n"
@@ -345,7 +358,7 @@ def build_dynamic_context(
                 used_tokens += skill_tokens
 
     # 知识库上下文
-    if used_tokens < remaining_budget:
+    if used_tokens < remaining_budget and need_rag:
         knowledge_text = get_cached_knowledge_context(task, session)
         if knowledge_text:
             knowledge_block = f"\n{knowledge_text}\n"
@@ -366,11 +379,11 @@ def build_dynamic_context(
     # 终端输出
     if used_tokens < remaining_budget:
         raw_output = get_recent_output()
-        term_lines = raw_output.splitlines()[-TERMINAL_OUTPUT_LINES:]
+        term_lines = raw_output.splitlines()[-config.app.terminal_output_lines:]
         if term_lines:
             term_text = (
                 "\n[Terminal Output (Last "
-                f"{TERMINAL_OUTPUT_LINES} lines)]:\n"
+                f"{config.app.terminal_output_lines} lines)]:\n"
                 + "\n".join(term_lines)
                 + "\n"
             )
@@ -384,8 +397,8 @@ def build_dynamic_context(
     if used_tokens < remaining_budget:
         file_tree = get_file_tree(
             root_dir=session.get("cwd", "."),
-            max_depth=FILE_TREE_MAX_DEPTH,
-            max_lines=FILE_TREE_MAX_LINES
+            max_depth=config.app.file_tree_max_depth,
+            max_lines=config.app.file_tree_max_lines
         )
         tree_text = f"\n[Project File Tree]:\n{file_tree}\n"
         tree_tokens = estimate_tokens(tree_text)

@@ -13,13 +13,12 @@ Attributes:
 import time
 import traceback
 from uuid import uuid4
+from common.config import config
 from common.constant import (
-    MAX_RECURSION_DEPTH,
-    MAX_TURNS_PER_AGENT,
-    UNCERTAINTY_KEYWORDS,
     END_KEYWORDS,
     INCOMPLETE_MARKERS,
-    MIN_RESPONSE_LENGTH
+    MIN_RESPONSE_LENGTH,
+    UNCERTAINTY_KEYWORDS,
 )
 from llm.context import assembler
 from llm.llm import call_qwen
@@ -176,10 +175,10 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
     memory_manager = create_memory_manager(session, session_id=memory_session_id)
 
     # 3. 递归深度检测
-    if session.depth > MAX_RECURSION_DEPTH:
+    if session.depth > config.app.max_recursion_depth:
         error_msg = (
             f"达到递归深度限制 (深度 {session.depth})。 "
-            f"任务 '{task_desc}' 已中止。"
+            "任务可能过于复杂或陷入死循环。"
         )
         error(error_msg)
         current_task.fail(error_msg)
@@ -236,7 +235,7 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
                 return f"错误: {error_msg}"
 
             turn_count += 1
-            if turn_count > MAX_TURNS_PER_AGENT:
+            if turn_count > config.app.max_turns_per_agent:
                 current_task.fail("达到最大对话轮数")
                 return "错误: 达到最大对话轮数。任务未完成。"
 

@@ -20,7 +20,7 @@ from state.session import Session  # noqa: E402
 from llm.terminal import log_output  # noqa: E402
 from todo.render import renderer  # noqa: E402
 from todo.store import to_do_store  # noqa: E402
-from common.config import config  # noqa: E402
+from common.config import config, config_file_manager, YAML_AVAILABLE
 from skill.manager import manager  # noqa: E402
 from mcp.registry import registry, sanitize_server_url  # noqa: E402
 from swarm.planner import MapReducePlanner  # noqa: E402
@@ -34,11 +34,7 @@ from knowledge import knowledge_manager  # noqa: E402
 from common.logger import logger  # noqa: E402
 from mcp.registry import registry as tool_registry  # noqa: E402
 
-try:
-    from common.config_file import config_file_manager
-    CONFIG_FILE_AVAILABLE = True
-except ImportError:
-    CONFIG_FILE_AVAILABLE = False
+
 
 
 def print_banner():
@@ -397,59 +393,30 @@ def config_handler():
     print("\n[Config Menu]")
     print("1. Show Current Config")
     print("2. Reload Config")
-    if CONFIG_FILE_AVAILABLE:
+    if YAML_AVAILABLE:
         print("3. Create Default Config File")
     choice = input_request("Select option (1-3): ")
 
     if choice == "1":
         print("\n[Current Config]:")
-        print(f"  LLM Model: {config.get_llm_model()}")
-        print(f"  Debug Mode: {config.is_debug_mode()}")
-        print(f"  Log Level: {config.get_log_level()}")
-        print(f"  To-do Path: {config.get_todo_storage_path()}")
-        print(f"  Checkpoint Dir: {config.get_checkpoint_dir()}")
-        print(f"  Vector DB Dir: {config.get_vector_db_dir()}")
+        print(f"  LLM Model: {config.llm.model}")
+        print(f"  Debug Mode: {config.app.debug_mode}")
+        print(f"  Log Level: {config.app.log_level}")
+        print(f"  To-do Path: {config.app.todo_storage_path}")
+        print(f"  Checkpoint Dir: {config.app.checkpoint_dir}")
+        print(f"  Vector DB Dir: {config.app.vector_db_dir}")
 
     elif choice == "2":
-        if CONFIG_FILE_AVAILABLE:
+        if YAML_AVAILABLE:
             config_file_manager.reload()
             info("Config reloaded.")
             logger.info("Config reloaded")
         else:
-            info("Config file not available.")
+            info("YAML not available.")
 
-    elif choice == "3" and CONFIG_FILE_AVAILABLE:
+    elif choice == "3" and YAML_AVAILABLE:
         path = input_request("Config file path (default: agent_config.yaml): ") or "agent_config.yaml"
         config_file_manager.create_default_config(path)
-
-
-def demo_handler(main_session: Session):
-    info("正在运行 Demo 流程")
-    try:
-        def word_count_tool(args: dict):
-            text = str(args.get("text", ""))
-            return {"words": len(text.split()), "chars": len(text), "preview": text[:50]}
-        tool_registry.register_local_tool("word_count", word_count_tool)
-    except Exception:
-        pass
-    task = "围绕“Agent Harness 的最小实现要点”，给出分解任务：资料收集、要点整理、风险与取舍，并最终汇总为一段 200 字说明。"
-    info(f"正在分解: {task}")
-    logger.info("Demo: decompose")
-    subtasks = MapReducePlanner.decompose(task, num_parts=3)
-    if not subtasks:
-        info("任务分解失败。")
-        return
-    info(f"生成子任务: {len(subtasks)}")
-    scheduler = SwarmScheduler(max_workers=min(len(subtasks), 3))
-    try:
-        results = scheduler.run_batch(subtasks, main_session)
-    finally:
-        scheduler.shutdown()
-    info("正在汇总结果")
-    final_result = ConsensusStrategy.map_reduce(results, task)
-    print_final_result(final_result)
-    main_session.add_message("assistant", f"Demo 完成:\n{final_result}")
-    logger.info("Demo completed")
 
 
 # Command Handlers
@@ -472,9 +439,9 @@ def main():
     """主函数，处理程序初始化和主事件循环."""
     try:
         print_banner()
-        if not config.get_llm_api_key():
+        if not config.llm.api_key:
             print(
-                f"{Colors.YELLOW}警告: 未设置 DASHSCOPE_API_KEY 环境变量。{Colors.RESET}"
+                f"{Colors.YELLOW}警告: 未设置 DASHSCOPE_API_KEY 环境变量或配置。{Colors.RESET}"
             )
             print(
                 "请使用以下命令设置: set DASHSCOPE_API_KEY=your_key (Windows) "
@@ -491,9 +458,9 @@ def main():
         manager.start_hot_reload()
 
         # 自动连接配置的 MCP 服务器
-        if CONFIG_FILE_AVAILABLE and config_file_manager.config.mcp.servers:
-            info(f"正在连接 {len(config_file_manager.config.mcp.servers)} 个 MCP 服务器...")
-            for url in config_file_manager.config.mcp.servers:
+        if YAML_AVAILABLE and config.mcp.servers:
+            info(f"正在连接 {len(config.mcp.servers)} 个 MCP 服务器...")
+            for url in config.mcp.servers:
                 safe_url = sanitize_server_url(url)
                 try:
                     connected = registry.connect_mcp_server(url)
@@ -516,15 +483,11 @@ def main():
         # 如果有命令行参数，作为单次任务执行
         if len(sys.argv) > 1:
             task = sys.argv[1]
-            if task.strip().lower() == "demo":
-                main_session = Session()
-                demo_handler(main_session)
-            else:
-                log_output(f"System: 开始执行单次任务: {task}")
-                logger.info(f"Starting single task: {task}")
-                result = run(task)
-                print_final_result(result)
-                show_plan()
+            log_output(f"System: 开始执行单次任务: {task}")
+            logger.info(f"Starting single task: {task}")
+            result = run(task)
+            print_final_result(result)
+            show_plan()
         else:
             # 交互式循环
             main_session = Session()
@@ -532,7 +495,7 @@ def main():
             while True:
                 try:
                     task = input_request(
-                        "\n用户 (kn知识, config配置, cp快照, br分支, mem记忆, skills技能, tools工具, hooks钩子, connect连接, swarm蜂群, demo演示, q退出)> "
+                        "\n用户 (kn知识, config配置, cp快照, br分支, mem记忆, skills技能, tools工具, hooks钩子, connect连接, swarm蜂群, q退出)> "
                     )
                     cmd = task.strip().lower()
 
@@ -543,10 +506,6 @@ def main():
 
                     if cmd == "swarm":
                         swarm_handler(main_session)
-                        continue
-
-                    if cmd == "demo":
-                        demo_handler(main_session)
                         continue
 
                     if cmd in ["cp", "checkpoint"]:
