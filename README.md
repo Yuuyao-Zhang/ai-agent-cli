@@ -121,10 +121,10 @@
 │   ├── store.py        # Todo 存储与版本控制
 │   └── render.py       # 可视化渲染
 ├── common/             # 通用组件
-│   ├── config.py       # 配置管理
+│   ├── config.py       # 统一配置管理 (支持 YAML + 环境变量)
 │   ├── security.py     # 安全策略与 ACL
 │   ├── logger.py       # 日志系统
-│   ├── constant.py     # 常量定义
+│   ├── constant.py     # 不可变核心常量
 │   ├── io_utils.py     # IO 工具
 │   ├── file_lock.py    # 文件锁
 │   └── vector/         # 向量工具
@@ -295,13 +295,14 @@ Session (状态更新)
 
 ### 环境变量
 
-当前项目代码中，以下环境变量会被直接读取：
-- `DASHSCOPE_API_KEY`：优先级高于配置文件
-- `LLM_MODEL`：优先级高于配置文件
-- `DEBUG`：开启调试模式
+当前项目支持通过环境变量自动映射覆盖 `agent_config.yaml` 中的对应配置项。最常用的环境变量有：
+- `DASHSCOPE_API_KEY`：用于主对话模型和 embedding（映射到 `llm.api_key`）
+- `LLM_MODEL`：指定使用的模型（映射到 `llm.model`）
+- `DEBUG`：开启调试模式（映射到 `app.debug_mode`）
+- `LOG_LEVEL`：指定日志级别（映射到 `app.log_level`）
 - `BAIDU_MAPS_MCP_AK`：供 `agent_config.yaml` 中的 `${BAIDU_MAPS_MCP_AK}` 展开使用
 
-快速开始章节已给出 Windows PowerShell 写入示例；如果你使用其他 shell，只需要设置同名环境变量即可。
+快速开始章节已给出 Windows PowerShell 写入示例；如果你使用其他 shell，只需要设置同名环境变量即可。项目在启动时会自动将环境变量的值注入到全局配置实例中。
 
 ### Anthropic 风格 Skill
 
@@ -340,9 +341,11 @@ allowed-tools:
 
 完整交互示例见“快速开始 > CLI 快速体验”。skill 既可以作为自动召回能力使用，也可以像命令一样显式触发。
 
-### 配置文件
+### 配置文件 (agent_config.yaml)
 
-创建 `agent_config.yaml`:
+项目使用全局统一的 `agent_config.yaml` 管理系统行为（包括大模型、记忆容量、Token预算、意图识别和安全策略）。如果没有该文件，可以在 CLI 输入 `config` -> `3` 自动生成一份默认配置。
+
+示例 `agent_config.yaml`:
 
 ```yaml
 llm:
@@ -352,6 +355,16 @@ llm:
   embedding_url: https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings
   temperature: 0.7
   max_tokens: null
+  max_retries: 3
+  retry_delay: 1.0
+  timeout: 60
+
+context:
+  system_ratio: 0.2
+  history_ratio: 0.6
+  file_tree_ratio: 0.05
+  terminal_ratio: 0.05
+  dynamic_ratio: 0.1
 
 security:
   trusted_domains: null
@@ -363,10 +376,24 @@ app:
   log_level: INFO
   checkpoint_dir: checkpoints
   vector_db_dir: vectordb
+  max_recursion_depth: 10
+  max_turns_per_agent: 20
+  max_buffer_lines: 50
+  max_total_tokens_per_agent: 8000
+  file_tree_max_depth: 3
+  file_tree_max_lines: 50
+  file_ref_truncate_length: 500
+  recent_file_ops_limit: 5
+  terminal_output_lines: 20
 
 mcpServers:
   example-server:
     url: http://localhost:8000/mcp
+
+intent:
+  enabled: true
+  model: null
+  prompt: null
 ```
 
 需要环境变量展开时，也可以这样写：
