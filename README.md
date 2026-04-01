@@ -140,7 +140,11 @@
 
 ### 1. 配置系统环境变量
 
-在首次启动前，建议先把必要配置写入**系统环境变量**。
+首次启动前，建议先写入最常用的环境变量：
+
+- `DASHSCOPE_API_KEY`：必需，用于主对话模型和 embedding
+- `LLM_MODEL`：可选，覆盖默认模型
+- `BAIDU_MAPS_MCP_AK`：可选，仅在配置百度地图 MCP 时需要
 
 Windows PowerShell 示例：
 
@@ -150,12 +154,7 @@ Windows PowerShell 示例：
 [System.Environment]::SetEnvironmentVariable("BAIDU_MAPS_MCP_AK", "你的百度地图 AK", "User")
 ```
 
-说明：
-- `DASHSCOPE_API_KEY`：必需，用于主对话模型和 embedding
-- `LLM_MODEL`：可选，默认是 `qwen-plus`
-- `BAIDU_MAPS_MCP_AK`：仅在你配置百度地图 MCP 时需要
-
-设置完成后，请**关闭并重新打开终端**，让新环境变量生效。
+设置完成后，请重新打开终端让新环境变量生效。更多变量说明见“配置 > 环境变量”。
 
 ### 2. 启动 Agent
 
@@ -177,14 +176,22 @@ knowledge/
 
 进入交互界面后，使用 `kn` 菜单同步默认知识目录。
 
-### 4. 真实对话示例
+### 4. CLI 快速体验
 
-下面是一个启动 `main.py` 后的真实使用方式，包含知识同步、菜单搜索和正常提问：
+下面是一个启动 `main.py` 后的精简体验示例，覆盖知识同步、skill 查看和普通提问：
 
 ```text
 $ python main.py
 
-用户 (kn知识, config配置, cp快照, br分支, mem记忆, swarm蜂群, q退出)> kn
+[INFO] 正在初始化 AI Agent...
+[INFO] 特性: 知识管理, Skill 系统, MCP 工具, 配置文件, 日志系统, 分层记忆, 快照回溯, 分支管理, 蜂群智能
+
+用户 (kn知识, config配置, cp快照, br分支, mem记忆, skills技能, tools工具, hooks钩子, connect连接, swarm蜂群, demo演示, q退出)> skills
+
+[可用技能]:
+  - explain-code [Anthropic | 自动/手动]: 解释代码、架构和执行流程；当用户要求“讲解这段代码”“分析模块职责”“说明调用链”时使用。
+
+用户 (kn知识, config配置, cp快照, br分支, mem记忆, skills技能, tools工具, hooks钩子, connect连接, swarm蜂群, demo演示, q退出)> kn
 
 [Knowledge Menu]
 Default Knowledge Dir: G:\PythonProject\AI-agent-CLI\knowledge\library
@@ -198,7 +205,15 @@ Select option (1-6): 6
 
 [INFO] Synced knowledge directory: indexed=0, updated=0, removed=0, skipped=2
 
-用户 (kn知识, config配置, cp快照, br分支, mem记忆, swarm蜂群, q退出)> Python 默认参数 exponent=2 是什么意思
+用户 (kn知识, config配置, cp快照, br分支, mem记忆, skills技能, tools工具, hooks钩子, connect连接, swarm蜂群, demo演示, q退出)> /explain-code main.py
+
+FINAL RESULT:
+`main.py` 是整个项目的命令行主入口，负责初始化 Agent、连接 MCP、注册命令菜单，并把用户输入分发到主执行循环。
+
+技能上下文引用:
+- explain-code
+
+用户 (kn知识, config配置, cp快照, br分支, mem记忆, skills技能, tools工具, hooks钩子, connect连接, swarm蜂群, demo演示, q退出)> Python 默认参数 exponent=2 是什么意思
 
 FINAL RESULT:
 在 Python 中，`exponent=2` 是函数定义中的默认参数，表示调用函数时如果没有显式传入 `exponent`，就自动使用值 `2`。
@@ -214,25 +229,7 @@ def power(base, exponent=2):
 - python_base.md | python_base > Python 基础 > Python 函数基础 | Chunk 2/3
 ```
 
-### 5. 再试一个层级 RAG 问题
-
-```text
-用户 (kn知识, config配置, cp快照, br分支, mem记忆, swarm蜂群, q退出)> Python 描述符协议是做什么的
-```
-
-这类问题会优先命中 `python_advanced.md` 中对应的标题章节，再从该章节下召回最相关的子块进行回答。
-
-### 6. MCP 配置示例
-
-项目支持通过 `mcpServers.<name>.url` 自动连接多个 MCP Server：
-
-```yaml
-mcpServers:
-  baidu-maps:
-    url: https://mcp.map.baidu.com/mcp?ak=${BAIDU_MAPS_MCP_AK}
-```
-
-启动 `main.py` 时会自动完成标准 MCP 初始化并注册远程工具。
+你也可以继续提问更复杂的知识问题，例如“Python 描述符协议是做什么的”，系统会优先命中对应标题章节，再从该章节下召回最相关的子块。
 
 ---
 
@@ -299,33 +296,13 @@ Session (状态更新)
 
 ### 环境变量
 
-```bash
-# 必需：主对话与 embedding
-export DASHSCOPE_API_KEY="your-api-key"
-
-# 可选：覆盖默认模型
-export LLM_MODEL="qwen-plus"
-
-# 可选：接入百度地图 MCP 时使用
-export BAIDU_MAPS_MCP_AK="your-baidu-ak"
-
-# 可选：调试模式
-export DEBUG=true
-```
-
-Windows PowerShell 永久写入示例：
-
-```powershell
-[System.Environment]::SetEnvironmentVariable("DASHSCOPE_API_KEY", "your-api-key", "User")
-[System.Environment]::SetEnvironmentVariable("LLM_MODEL", "qwen-plus", "User")
-[System.Environment]::SetEnvironmentVariable("BAIDU_MAPS_MCP_AK", "your-baidu-ak", "User")
-```
-
 当前项目代码中，以下环境变量会被直接读取：
 - `DASHSCOPE_API_KEY`：优先级高于配置文件
 - `LLM_MODEL`：优先级高于配置文件
 - `DEBUG`：开启调试模式
 - `BAIDU_MAPS_MCP_AK`：供 `agent_config.yaml` 中的 `${BAIDU_MAPS_MCP_AK}` 展开使用
+
+快速开始章节已给出 Windows PowerShell 写入示例；如果你使用其他 shell，只需要设置同名环境变量即可。
 
 ### Anthropic 风格 Skill
 
@@ -362,32 +339,7 @@ allowed-tools:
 - 显式触发：输入 `/explain-code main.py`
 - 查看已加载 skills：在 CLI 中输入 `skills`
 
-模拟启动 `main.py` 后的 skill 体验示例：
-
-```text
-$ python main.py
-
-用户 (kn知识, config配置, cp快照, br分支, mem记忆, swarm蜂群, q退出)> skills
-
-[可用技能]:
-  - explain-code [Anthropic | 自动/手动]: 解释代码、架构和执行流程；当用户要求“讲解这段代码”“分析模块职责”“说明调用链”时使用。
-
-用户 (kn知识, config配置, cp快照, br分支, mem记忆, swarm蜂群, q退出)> /explain-code main.py
-
-FINAL RESULT:
-`main.py` 是整个项目的命令行主入口，负责初始化 Agent、连接 MCP、注册命令菜单，并把用户输入分发到主执行循环。
-
-它的主流程可以分成四段：
-- 启动阶段：检查 API Key、初始化日志、知识库、Skill 系统和 MCP 连接
-- 菜单阶段：处理 `kn`、`config`、`cp`、`br`、`mem`、`swarm`、`skills` 等内置命令
-- 对话阶段：把普通输入交给 `run(...)`，进入 Agent 主循环
-- 输出阶段：统一打印 FINAL RESULT，并展示当前任务计划
-
-技能上下文引用:
-- explain-code
-```
-
-这样既可以把 skill 当成“自动召回的能力”，也可以像命令一样显式触发，便于在主交互流中复用专门的处理模板。
+完整交互示例见“快速开始 > CLI 快速体验”。skill 既可以作为自动召回能力使用，也可以像命令一样显式触发。
 
 ### 配置文件
 
@@ -418,13 +370,15 @@ mcpServers:
     url: http://localhost:8000/mcp
 ```
 
-例如接入需要 AK 的服务时，也可以这样写：
+需要环境变量展开时，也可以这样写：
 
 ```yaml
 mcpServers:
   baidu-maps:
     url: https://mcp.map.baidu.com/mcp?ak=${BAIDU_MAPS_MCP_AK}
 ```
+
+启动 `main.py` 时会自动连接这些 MCP Server，并把远程工具注册到统一工具入口。
 
 ### 知识库目录约定
 
