@@ -125,7 +125,11 @@ def show_skills():
         return
     print("\n[可用技能]:")
     for name, skill in skills.items():
-        print(f"  - {name}: {skill.description}")
+        mode = "自动/手动" if skill.supports_auto_invocation() and skill.supports_user_invocation() else (
+            "仅自动" if skill.supports_auto_invocation() else "仅手动"
+        )
+        source = "Anthropic" if skill.source_format == "claude" else "Legacy"
+        print(f"  - {name} [{source} | {mode}]: {skill.description}")
 
 
 def show_tools():
@@ -159,7 +163,14 @@ def connect_mcp_handler():
     """处理连接 MCP Server."""
     url = input_request("请输入 MCP Server URL: ")
     if url:
-        registry.connect_mcp_server(url)
+        safe_url = sanitize_server_url(url)
+        connected = registry.connect_mcp_server(url)
+        if connected:
+            info(f"MCP 服务器连接成功: {safe_url}")
+            logger.debug(f"Connected to MCP server: {safe_url}")
+        else:
+            error(f"MCP 服务器连接失败: {safe_url}")
+            logger.debug(f"Failed to connect to MCP server: {safe_url}")
 
 
 def swarm_handler(main_session: Session):
@@ -471,9 +482,9 @@ def main():
             )
             print("或使用 'config' 命令创建配置文件。")
 
-        info("正在初始化 v7 Agent...")
-        info("特性: 知识管理, 配置文件, 日志系统, 分层记忆, 快照回溯, 蜂群智能")
-        logger.info("v7 Agent initialized")
+        info("正在初始化 AI Agent...")
+        info("特性: 知识管理, Skill 系统, MCP 工具, 配置文件, 日志系统, 分层记忆, 快照回溯, 分支管理, 蜂群智能")
+        logger.info("AI Agent initialized")
 
         # 初始化 Skill 系统
         manager.initialize()
@@ -487,11 +498,14 @@ def main():
                 try:
                     connected = registry.connect_mcp_server(url)
                     if connected:
-                        logger.info(f"Connected to MCP server: {safe_url}")
+                        info(f"MCP 服务器连接成功: {safe_url}")
+                        logger.debug(f"Connected to MCP server: {safe_url}")
                     else:
-                        logger.error(f"Failed to connect to MCP server: {safe_url}")
+                        error(f"MCP 服务器连接失败: {safe_url}")
+                        logger.debug(f"Failed to connect to MCP server: {safe_url}")
                 except Exception as e:
-                    logger.error(f"Failed to connect to MCP server {safe_url}: {e}")
+                    error(f"MCP 服务器连接失败: {safe_url}")
+                    logger.debug(f"Failed to connect to MCP server {safe_url}: {e}")
 
         # 检查是否有残留任务并提示
         if to_do_store.get_all():
@@ -518,7 +532,7 @@ def main():
             while True:
                 try:
                     task = input_request(
-                        "\n用户 (kn知识, config配置, cp快照, br分支, mem记忆, swarm蜂群, q退出)> "
+                        "\n用户 (kn知识, config配置, cp快照, br分支, mem记忆, skills技能, tools工具, hooks钩子, connect连接, swarm蜂群, demo演示, q退出)> "
                     )
                     cmd = task.strip().lower()
 

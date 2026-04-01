@@ -3,6 +3,7 @@
 import math
 from typing import Dict, List, Tuple
 
+from common.vector.tokenizer import tokenize
 from llm.llm import call_qwen_embedding
 from skill.types import DisclosureLevel, Skill
 
@@ -20,6 +21,7 @@ class VectorIndex:
         self.brief_index: Dict[str, List[float]] = {}
         self.summary_index: Dict[str, List[float]] = {}
         self.detailed_index: Dict[str, List[float]] = {}
+        self.lexical_index: Dict[str, List[str]] = {}
 
     def rebuild(self, skills: List[Skill]) -> None:
         """重建向量索引.
@@ -32,23 +34,22 @@ class VectorIndex:
         self.brief_index = {}
         self.summary_index = {}
         self.detailed_index = {}
+        self.lexical_index = {}
 
         if not skills:
             return
 
         for skill in skills:
+            detailed_text = self._build_index_text(skill, DisclosureLevel.DETAILED)
+            brief_text = self._build_index_text(skill, DisclosureLevel.BRIEF)
+            summary_text = self._build_index_text(skill, DisclosureLevel.SUMMARY)
             self.vectors.append(
-                call_qwen_embedding(self._build_index_text(skill, DisclosureLevel.DETAILED))
+                call_qwen_embedding(detailed_text)
             )
-            self.brief_index[skill.name] = call_qwen_embedding(
-                self._build_index_text(skill, DisclosureLevel.BRIEF)
-            )
-            self.summary_index[skill.name] = call_qwen_embedding(
-                self._build_index_text(skill, DisclosureLevel.SUMMARY)
-            )
-            self.detailed_index[skill.name] = call_qwen_embedding(
-                self._build_index_text(skill, DisclosureLevel.DETAILED)
-            )
+            self.brief_index[skill.name] = call_qwen_embedding(brief_text)
+            self.summary_index[skill.name] = call_qwen_embedding(summary_text)
+            self.detailed_index[skill.name] = call_qwen_embedding(detailed_text)
+            self.lexical_index[skill.name] = tokenize(detailed_text)
 
     def _build_index_text(self, skill: Skill, level: DisclosureLevel) -> str:
         """构建用于索引的文本.
@@ -63,15 +64,20 @@ class VectorIndex:
             索引文本
         """
         if level == DisclosureLevel.BRIEF:
-            return f"{skill.name} {skill.description} {skill.category}"
+            return (
+                f"{skill.name} {skill.description} {skill.category} "
+                f"{skill.argument_hint}"
+            )
         elif level == DisclosureLevel.SUMMARY:
             tags_str = " ".join(skill.tags)
+            tools_str = " ".join(skill.allowed_tools)
             return (
                 f"{skill.name} {skill.description} {skill.summary} "
-                f"{skill.category} {tags_str}"
+                f"{skill.category} {tags_str} {tools_str}"
             )
         else:
             tags_str = " ".join(skill.tags)
+            tools_str = " ".join(skill.allowed_tools)
             params_str = " ".join(
                 f"{p.name} {p.description}" for p in skill.parameters
             )
@@ -80,6 +86,10 @@ class VectorIndex:
                 for e in skill.examples
             )
             hints_str = " ".join(h.suggestion for h in skill.hints)
+            paths_str = " ".join(skill.paths)
+            supporting_str = " ".join(
+                item.path for item in skill.supporting_files
+            )
             return (
                 (f"{skill.name} " * 3) +
                 (f"{skill.description} " * 2) +
@@ -87,9 +97,12 @@ class VectorIndex:
                 f"{skill.content} " +
                 f"{skill.category} " +
                 f"{tags_str} " +
+                f"{tools_str} " +
                 f"{params_str} " +
                 f"{examples_str} " +
-                f"{hints_str}"
+                f"{hints_str} " +
+                f"{paths_str} " +
+                f"{supporting_str}"
             )
 
     def search(
@@ -109,16 +122,28 @@ class VectorIndex:
             return []
 
         query_vec = call_qwen_embedding(query)
-        if not query_vec:
-            return []
+        query_tokens = tokenize(query)
 
         results = []
         for i, skill in enumerate(self.skills):
             base_vec = self.vectors[i] if i < len(self.vectors) else []
-            base_score = self._cosine_similarity(query_vec, base_vec)
             level_vec = self._get_level_vector(skill.name, level)
-            level_score = self._cosine_similarity(query_vec, level_vec)
-            combined_score = base_score * 0.6 + level_score * 0.4
+
+            embedding_score = 0.0
+            if query_vec:
+                base_score = self._cosine_similarity(query_vec, base_vec)
+                level_score = self._cosine_similarity(query_vec, level_vec)
+                embedding_score = base_score * 0.6 + level_score * 0.4
+
+            lexical_score = self._lexical_similarity(
+                query_tokens,
+                self.lexical_index.get(skill.name, []),
+            )
+
+            combined_score = embedding_score
+            if lexical_score > 0:
+                combined_score = max(combined_score, lexical_score * 0.85)
+
             if combined_score > 0:
                 results.append((skill, combined_score))
 
@@ -185,6 +210,22 @@ class VectorIndex:
             return 0.0
 
         return dot_product / (norm_v1 * norm_v2)
+
+    @staticmethod
+    def _lexical_similarity(query_tokens: List[str], doc_tokens: List[str]) -> float:
+        """基于词项重合的兜底相似度."""
+        if not query_tokens or not doc_tokens:
+            return 0.0
+
+        query_set = set(query_tokens)
+        doc_set = set(doc_tokens)
+        overlap = query_set & doc_set
+        if not overlap:
+            return 0.0
+
+        coverage = len(overlap) / len(query_set)
+        precision = len(overlap) / len(doc_set)
+        return coverage * 0.8 + precision * 0.2
 
     def get_skill_keywords(self, skill_name: str, top_n: int = 10) -> List[Tuple[str, float]]:
         """获取 Skill 的关键词（预留功能）.

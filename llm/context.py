@@ -24,6 +24,8 @@ from common.constant import (
 from common.file_index import get_file_tree
 from knowledge import knowledge_manager
 from mcp.registry import registry
+from skill.manager import manager as skill_manager
+from skill.types import DisclosureLevel
 from state.session import Session
 from llm.terminal import get_recent_output
 
@@ -151,6 +153,68 @@ def get_available_mcp_tools_text(limit: int = 20) -> str:
     return "\n".join(lines) + "\n"
 
 
+def get_recent_file_paths(session: Session, limit: int = RECENT_FILE_OPS_LIMIT) -> List[str]:
+    """提取最近涉及的文件路径."""
+    paths: List[str] = []
+    seen = set()
+
+    cwd = session.get("cwd", "")
+    if isinstance(cwd, str) and cwd.strip():
+        seen.add(cwd.strip())
+        paths.append(cwd.strip())
+
+    for msg in reversed(session.history):
+        if msg["role"] != "user" or "Tool Results" not in msg["content"]:
+            continue
+
+        matches = re.findall(r"(?:Successfully wrote to|Successfully edited)\s+(.+)", msg["content"])
+        for match in matches:
+            normalized = match.strip()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                paths.append(normalized)
+                if len(paths) >= limit:
+                    return paths
+
+    return paths
+
+
+def get_cached_skill_context(task: str, session: Session) -> str:
+    """获取缓存的 skill 上下文."""
+    candidate_paths = get_recent_file_paths(session)
+    cache_key = f"{task}|{'|'.join(candidate_paths)}"
+    cache = session.get("_skill_context_cache")
+    if isinstance(cache, dict) and cache.get("key") == cache_key:
+        return str(cache.get("context", ""))
+
+    skills, prompt, arguments_map, explicit = skill_manager.build_prompt_for_task(
+        task,
+        candidate_paths=candidate_paths,
+        top_k=2,
+        min_score=0.18,
+        level=DisclosureLevel.DETAILED,
+    )
+
+    references = [skill.name for skill in skills]
+    context = ""
+    if prompt.strip():
+        header = "[Skills Context - Anthropic Style]"
+        if explicit:
+            header += "\n此轮为显式 skill 调用，请优先遵循下列 skill 指令。"
+        else:
+            header += "\n以下 skills 由系统按任务自动召回。"
+        context = f"{header}\n\n{prompt.strip()}"
+
+    session.set("_skill_context_cache", {
+        "key": cache_key,
+        "context": context,
+        "references": references,
+        "arguments_map": arguments_map,
+        "explicit": explicit,
+    })
+    return context
+
+
 def get_cached_knowledge_context(task: str, session: Session) -> str:
     cache = session.get("_knowledge_context_cache")
     if isinstance(cache, dict) and cache.get("task") == task:
@@ -241,6 +305,15 @@ def build_dynamic_context(
 
     context_parts = ["\n[Additional Context]:"]
     used_tokens = estimate_tokens(context_parts[0])
+
+    if used_tokens < remaining_budget:
+        skill_text = get_cached_skill_context(task, session)
+        if skill_text:
+            skill_block = f"\n{skill_text}\n"
+            skill_tokens = estimate_tokens(skill_block)
+            if used_tokens + skill_tokens < remaining_budget:
+                context_parts.append(skill_block)
+                used_tokens += skill_tokens
 
     # 知识库上下文
     if used_tokens < remaining_budget:

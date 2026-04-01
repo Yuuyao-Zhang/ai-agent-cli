@@ -55,6 +55,25 @@ def append_knowledge_references(response: str, session: Session) -> str:
     return response.rstrip() + "\n\n" + "\n".join(reference_lines)
 
 
+def append_skill_references(response: str, session: Session) -> str:
+    """为最终回答追加已激活的 skill 引用."""
+    if not response or "技能上下文引用" in response:
+        return response
+
+    cache = session.get("_skill_context_cache", {})
+    if not isinstance(cache, dict):
+        return response
+
+    references = cache.get("references") or []
+    if not references:
+        return response
+
+    reference_lines = ["技能上下文引用:"]
+    for ref in references[:3]:
+        reference_lines.append(f"- {ref}")
+    return response.rstrip() + "\n\n" + "\n".join(reference_lines)
+
+
 def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> str:
     """执行 Agent 任务循环.
 
@@ -178,6 +197,7 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
                 if any(kw in response for kw in END_KEYWORDS):
                     current_task.complete()
                     final_response = append_knowledge_references(response, session)
+                    final_response = append_skill_references(final_response, session)
                     
                     # Hook: POST_RUN
                     hook_ctx = HookContext(
@@ -194,6 +214,7 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
                 ):
                     current_task.complete()
                     final_response = append_knowledge_references(response, session)
+                    final_response = append_skill_references(final_response, session)
                     
                     # Hook: POST_RUN
                     hook_ctx = HookContext(

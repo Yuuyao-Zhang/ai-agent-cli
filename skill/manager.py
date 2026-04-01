@@ -5,6 +5,7 @@
 """
 
 import os
+import re
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -28,17 +29,27 @@ class SkillManager:
         skill_dir: Skill 目录
     """
 
-    def __init__(self, skill_dir: str):
+    def __init__(self, skill_dir: str, extra_skill_dirs: Optional[List[str]] = None):
         """初始化管理器.
 
         Args:
             skill_dir: Skill 文件所在目录
         """
-        self.loader = SkillLoader(skill_dir)
+        extra_skill_dirs = extra_skill_dirs or []
+        ordered_dirs = [skill_dir, *extra_skill_dirs]
+        unique_dirs: List[str] = []
+        for path in ordered_dirs:
+            normalized = os.path.abspath(path)
+            if normalized not in unique_dirs:
+                unique_dirs.append(normalized)
+
+        self.primary_skill_dir = unique_dirs[0]
+        self.skill_dirs = unique_dirs
+        self.loader = SkillLoader(self.skill_dirs)
         self.writer = SkillWriter(skill_dir)
         self.index = VectorIndex()
         self.skills: Dict[str, Skill] = {}
-        self.skill_dir = skill_dir
+        self.skill_dir = self.primary_skill_dir
         self._watching = False
         self._lock = threading.RLock()
 
@@ -146,7 +157,14 @@ class SkillManager:
         skills = self.resolve_dependencies(skill_name)
         return [s.disclose(level) for s in skills]
 
-    def search_skills(self, query: str, top_k: int = 3) -> List[Skill]:
+    def search_skills(
+        self,
+        query: str,
+        top_k: int = 3,
+        auto_only: bool = False,
+        candidate_paths: Optional[List[str]] = None,
+        min_score: float = 0.0,
+    ) -> List[Skill]:
         """语义检索 Skills.
 
         Args:
@@ -156,8 +174,26 @@ class SkillManager:
         Returns:
             匹配的 Skill 列表
         """
-        results = self.index.search(query, top_k)
-        return [r[0] for r in results]
+        candidate_paths = candidate_paths or []
+        raw_results = self.index.search(query, max(top_k * 4, top_k))
+        filtered: List[Skill] = []
+        seen = set()
+
+        for skill, score in raw_results:
+            if skill.name in seen:
+                continue
+            if score < min_score:
+                continue
+            if auto_only and not skill.supports_auto_invocation():
+                continue
+            if candidate_paths and not skill.applies_to_any_path(candidate_paths):
+                continue
+            filtered.append(skill)
+            seen.add(skill.name)
+            if len(filtered) >= top_k:
+                break
+
+        return filtered
 
     def search_skills_disclosed(
         self, query: str, level: DisclosureLevel, top_k: int = 3
@@ -240,6 +276,7 @@ class SkillManager:
         skill_names: List[str],
         level: DisclosureLevel = DisclosureLevel.DETAILED,
         include_dependencies: bool = True,
+        arguments_map: Optional[Dict[str, str]] = None,
     ) -> str:
         """构建上下文 Prompt.
 
@@ -253,6 +290,7 @@ class SkillManager:
         Returns:
             格式化的 Prompt 字符串
         """
+        arguments_map = arguments_map or {}
         lines = ["# Skills Context\n"]
 
         processed = set()
@@ -271,10 +309,76 @@ class SkillManager:
                 if skill.name in processed:
                     continue
                 processed.add(skill.name)
-                lines.append(skill.to_prompt(level))
+                lines.append(
+                    skill.to_prompt(
+                        level,
+                        arguments=arguments_map.get(skill.name, ""),
+                    )
+                )
                 lines.append("---\n")
 
         return "\n".join(lines)
+
+    def parse_explicit_invocation(self, task: str) -> Optional[Tuple[Skill, str]]:
+        """解析显式的 /skill-name 调用."""
+        match = re.match(r"^\s*/([a-z0-9][a-z0-9-]*)\b(.*)$", task.strip(), re.I)
+        if not match:
+            return None
+
+        skill_name = match.group(1).strip()
+        arguments = match.group(2).strip()
+        skill = self.get_skill(skill_name)
+        if not skill or not skill.supports_user_invocation():
+            return None
+        return skill, arguments
+
+    def select_skills_for_task(
+        self,
+        task: str,
+        candidate_paths: Optional[List[str]] = None,
+        top_k: int = 2,
+        min_score: float = 0.18,
+    ) -> Tuple[List[Skill], Dict[str, str], bool]:
+        """根据任务选择应激活的 skills."""
+        explicit = self.parse_explicit_invocation(task)
+        if explicit:
+            skill, arguments = explicit
+            return [skill], {skill.name: arguments}, True
+
+        skills = self.search_skills(
+            task,
+            top_k=top_k,
+            auto_only=True,
+            candidate_paths=candidate_paths,
+            min_score=min_score,
+        )
+        return skills, {}, False
+
+    def build_prompt_for_task(
+        self,
+        task: str,
+        candidate_paths: Optional[List[str]] = None,
+        top_k: int = 2,
+        min_score: float = 0.18,
+        level: DisclosureLevel = DisclosureLevel.DETAILED,
+    ) -> Tuple[List[Skill], str, Dict[str, str], bool]:
+        """为当前任务构建 skill prompt."""
+        skills, arguments_map, explicit = self.select_skills_for_task(
+            task,
+            candidate_paths=candidate_paths,
+            top_k=top_k,
+            min_score=min_score,
+        )
+        if not skills:
+            return [], "", {}, explicit
+
+        prompt = self.build_context_prompt(
+            [skill.name for skill in skills],
+            level=level,
+            include_dependencies=True,
+            arguments_map=arguments_map,
+        )
+        return skills, prompt, arguments_map, explicit
 
     def create_skill(self, skill: Skill) -> str:
         """创建新 Skill.
@@ -338,18 +442,19 @@ class SkillManager:
             最新修改时间戳
         """
         max_mtime = 0.0
-        if not os.path.exists(self.skill_dir):
-            return 0.0
+        for skill_dir in self.skill_dirs:
+            if not os.path.exists(skill_dir):
+                continue
 
-        for root, _, files in os.walk(self.skill_dir):
-            for file in files:
-                if file.endswith((".json", ".yaml", ".yml")):
-                    path = os.path.join(root, file)
-                    try:
-                        mtime = os.path.getmtime(path)
-                        max_mtime = max(max_mtime, mtime)
-                    except OSError:
-                        pass
+            for root, _, files in os.walk(skill_dir):
+                for file in files:
+                    if file.endswith((".json", ".yaml", ".yml")) or file == "SKILL.md":
+                        path = os.path.join(root, file)
+                        try:
+                            mtime = os.path.getmtime(path)
+                            max_mtime = max(max_mtime, mtime)
+                        except OSError:
+                            pass
         return max_mtime
 
 
@@ -469,4 +574,7 @@ class ProgressiveDisclosureEngine:
         self._mention_counts.clear()
 
 
-manager = SkillManager(os.path.join(os.getcwd(), "skills"))
+manager = SkillManager(
+    os.path.join(os.getcwd(), ".my_agent", "skills"),
+    extra_skill_dirs=[os.path.join(os.getcwd(), "skills")],
+)

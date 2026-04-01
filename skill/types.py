@@ -1,11 +1,15 @@
 """Skill 类型定义模块.
 
-定义 Skill 的数据结构，支持渐进式披露 (Progressive Disclosure)。
+定义更贴近 Anthropic/Claude 风格的 Skill 数据结构，
+同时保持对现有渐进式披露能力的兼容。
 """
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List
+import fnmatch
+import os
+import re
+from typing import Any, Dict, List, Optional
 
 
 class DisclosureLevel(Enum):
@@ -80,6 +84,14 @@ class SkillParameter:
 
 
 @dataclass
+class SkillSupportingFile:
+    """Skill 配套文件."""
+
+    path: str = ""
+    content: str = ""
+
+
+@dataclass
 class Skill:
     """Skill 数据结构.
 
@@ -101,6 +113,20 @@ class Skill:
         advanced_config: 高级配置 (用于 FULL 级别)
         embedding: 向量嵌入
         path: 文件路径
+        skill_dir: Skill 所在目录
+        source_format: 技能来源格式 (legacy / claude)
+        argument_hint: 手动调用时的参数提示
+        disable_model_invocation: 是否禁止模型自动触发
+        user_invocable: 是否允许用户直接触发
+        allowed_tools: 激活该 skill 时默认允许的工具
+        model: skill 建议模型
+        effort: skill 建议推理强度
+        context: skill 上下文模式
+        agent: skill 建议 agent
+        hooks: skill hooks 配置
+        paths: skill 生效路径限制
+        shell: skill 建议 shell
+        supporting_files: 配套文件
         disclosure_level: 当前披露级别
     """
 
@@ -119,6 +145,20 @@ class Skill:
     advanced_config: Dict[str, Any] = field(default_factory=dict)
     embedding: List[float] = field(default_factory=list)
     path: str = ""
+    skill_dir: str = ""
+    source_format: str = "legacy"
+    argument_hint: str = ""
+    disable_model_invocation: bool = False
+    user_invocable: bool = True
+    allowed_tools: List[str] = field(default_factory=list)
+    model: str = ""
+    effort: str = ""
+    context: str = ""
+    agent: str = ""
+    hooks: Dict[str, Any] = field(default_factory=dict)
+    paths: List[str] = field(default_factory=list)
+    shell: str = ""
+    supporting_files: List[SkillSupportingFile] = field(default_factory=list)
     disclosure_level: DisclosureLevel = DisclosureLevel.BRIEF
 
     @staticmethod
@@ -135,6 +175,7 @@ class Skill:
             "name": skill.name,
             "description": skill.description,
             "category": skill.category,
+            "source_format": skill.source_format,
         }
 
     @staticmethod
@@ -155,6 +196,9 @@ class Skill:
             "tags": skill.tags,
             "parameters_count": len(skill.parameters),
             "examples_count": len(skill.examples),
+            "allowed_tools": skill.allowed_tools,
+            "user_invocable": skill.user_invocable,
+            "disable_model_invocation": skill.disable_model_invocation,
         }
 
     @staticmethod
@@ -197,6 +241,12 @@ class Skill:
             "dependencies": skill.dependencies,
             "tags": skill.tags,
             "version": skill.version,
+            "argument_hint": skill.argument_hint,
+            "allowed_tools": skill.allowed_tools,
+            "user_invocable": skill.user_invocable,
+            "disable_model_invocation": skill.disable_model_invocation,
+            "paths": skill.paths,
+            "supporting_files": [f.path for f in skill.supporting_files],
         }
 
     @staticmethod
@@ -215,7 +265,15 @@ class Skill:
                 "author": skill.author,
                 "advanced_config": skill.advanced_config,
                 "path": skill.path,
+                "skill_dir": skill.skill_dir,
                 "embedding_dim": len(skill.embedding) if skill.embedding else 0,
+                "source_format": skill.source_format,
+                "model": skill.model,
+                "effort": skill.effort,
+                "context": skill.context,
+                "agent": skill.agent,
+                "hooks": skill.hooks,
+                "shell": skill.shell,
             }
         )
         return detailed
@@ -254,7 +312,69 @@ class Skill:
                 relevant.append(hint)
         return sorted(relevant, key=lambda x: x.priority, reverse=True)
 
-    def to_prompt(self, level: DisclosureLevel = DisclosureLevel.DETAILED) -> str:
+    def supports_auto_invocation(self) -> bool:
+        """是否允许模型自动触发该 skill."""
+        return not self.disable_model_invocation
+
+    def supports_user_invocation(self) -> bool:
+        """是否允许用户显式触发该 skill."""
+        return self.user_invocable
+
+    def applies_to_path(self, candidate_path: str) -> bool:
+        """判断 skill 是否适用于指定路径."""
+        if not self.paths:
+            return True
+
+        normalized = candidate_path.replace("\\", "/")
+        for pattern in self.paths:
+            if fnmatch.fnmatch(normalized, pattern.replace("\\", "/")):
+                return True
+        return False
+
+    def applies_to_any_path(self, candidate_paths: List[str]) -> bool:
+        """判断 skill 是否适用于一组路径."""
+        if not self.paths:
+            return True
+        return any(self.applies_to_path(path) for path in candidate_paths)
+
+    @staticmethod
+    def _replace_argument_tokens(text: str, arguments: str) -> str:
+        """替换 Claude 风格参数占位符."""
+        if not text:
+            return text
+
+        args = arguments.strip()
+        parts = args.split() if args else []
+
+        def replace_index(match: re.Match) -> str:
+            try:
+                idx = int(match.group(1))
+            except ValueError:
+                return ""
+            return parts[idx] if 0 <= idx < len(parts) else ""
+
+        rendered = text.replace("$ARGUMENTS", args)
+        rendered = re.sub(r"\$ARGUMENTS\[(\d+)\]", replace_index, rendered)
+        rendered = re.sub(r"\$(\d+)", replace_index, rendered)
+        return rendered
+
+    def render_instruction(self, arguments: str = "") -> str:
+        """渲染 skill 指令正文."""
+        rendered = self._replace_argument_tokens(self.content, arguments)
+        rendered = rendered.replace(
+            "${CLAUDE_SKILL_DIR}",
+            self.skill_dir.replace("\\", "/") if self.skill_dir else "",
+        )
+
+        if arguments.strip() and "$ARGUMENTS" not in self.content:
+            rendered = rendered.rstrip() + f"\n\nARGUMENTS: {arguments.strip()}"
+        return rendered.strip()
+
+    def to_prompt(
+        self,
+        level: DisclosureLevel = DisclosureLevel.DETAILED,
+        arguments: str = "",
+    ) -> str:
         """将 Skill 转换为 Prompt 格式.
 
         Args:
@@ -269,10 +389,14 @@ class Skill:
         if level == DisclosureLevel.BRIEF:
             lines.append(f"Description: {info['description']}")
             lines.append(f"Category: {info['category']}")
+            if self.argument_hint:
+                lines.append(f"Arguments: {self.argument_hint}")
         elif level == DisclosureLevel.SUMMARY:
             lines.append(f"Description: {info['description']}")
             lines.append(f"Summary: {info['summary']}")
             lines.append(f"Tags: {', '.join(info['tags']) if info['tags'] else 'None'}")
+            if self.allowed_tools:
+                lines.append(f"Allowed Tools: {', '.join(self.allowed_tools)}")
         else:
             lines.append(f"Version: {self.version}")
             lines.append(f"Description: {self.description}")
@@ -280,6 +404,16 @@ class Skill:
             lines.append("## Summary")
             lines.append(self.summary if self.summary else self.description)
             lines.append("")
+
+            if self.argument_hint:
+                lines.append("## Argument Hint")
+                lines.append(self.argument_hint)
+                lines.append("")
+
+            if self.allowed_tools:
+                lines.append("## Allowed Tools")
+                lines.append(", ".join(self.allowed_tools))
+                lines.append("")
 
             if self.parameters:
                 lines.append("## Parameters")
@@ -292,7 +426,7 @@ class Skill:
 
             if level in (DisclosureLevel.DETAILED, DisclosureLevel.FULL):
                 lines.append("## Content")
-                lines.append(self.content)
+                lines.append(self.render_instruction(arguments))
                 lines.append("")
 
                 if self.examples:
@@ -313,9 +447,40 @@ class Skill:
                         lines.append(f"- [{h.condition}] {h.suggestion}")
                     lines.append("")
 
+                if self.supporting_files:
+                    lines.append("## Supporting Files")
+                    for supporting_file in self.supporting_files:
+                        lines.append(f"- {supporting_file.path}")
+                    lines.append("")
+
+                    for supporting_file in self.supporting_files:
+                        if not supporting_file.content.strip():
+                            continue
+                        lines.append(f"### File: {supporting_file.path}")
+                        lines.append(supporting_file.content)
+                        lines.append("")
+
             if level == DisclosureLevel.FULL and self.advanced_config:
                 lines.append("## Advanced Configuration")
                 for key, value in self.advanced_config.items():
                     lines.append(f"- {key}: {value}")
+
+            if level == DisclosureLevel.FULL:
+                lines.append("")
+                lines.append("## Invocation Control")
+                lines.append(f"- Auto Invocation: {self.supports_auto_invocation()}")
+                lines.append(f"- User Invocable: {self.supports_user_invocation()}")
+                if self.paths:
+                    lines.append(f"- Paths: {', '.join(self.paths)}")
+                if self.model:
+                    lines.append(f"- Model: {self.model}")
+                if self.effort:
+                    lines.append(f"- Effort: {self.effort}")
+                if self.context:
+                    lines.append(f"- Context: {self.context}")
+                if self.agent:
+                    lines.append(f"- Agent: {self.agent}")
+                if self.shell:
+                    lines.append(f"- Shell: {self.shell}")
 
         return "\n".join(lines)

@@ -7,6 +7,7 @@
 from enum import Enum
 from typing import Dict, Any, Optional, List
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+from common.logger import logger
 from mcp.client import MCPClient
 
 
@@ -146,11 +147,13 @@ class ToolRegistry:
                         self._remote_tools[tool_name] = []
                     self._remote_tools[tool_name].append(client)
                     self._tool_specs[tool_name] = tool
-                    print(f"Registered remote tool: {tool_name} from {safe_url}")
+                    logger.debug(
+                        f"Registered remote tool: {tool_name} from {safe_url}"
+                    )
             self._mcp_clients.append(client)
             return True
         except Exception as e:
-            print(f"Failed to connect to MCP server {safe_url}: {e}")
+            logger.debug(f"Failed to connect to MCP server {safe_url}: {e}")
             return False
 
     def get_tool(self, name: str) -> Optional[Any]:

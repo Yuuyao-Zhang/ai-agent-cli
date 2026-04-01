@@ -39,6 +39,10 @@
 - **依赖管理**: DAG 拓扑排序，自动解析技能依赖
 - **热重载**: 文件变更自动重载，无需重启
 - **语义检索**: 向量索引支持技能语义搜索
+- **Anthropic 风格目录技能**: 支持 `.my_agent/skills/<skill-name>/SKILL.md`
+- **自动/显式调用**: 支持自动召回与 `/skill-name 参数` 显式调用
+- **Frontmatter 配置**: 支持 `description`、`allowed-tools`、`disable-model-invocation`、`user-invocable`、`paths`
+- **配套文件**: 支持 skill 目录内引用 `reference.md` 等补充材料
 
 ### 6. 安全系统 (Security)
 - **2D ACL 矩阵**: 角色 × 工具 的细粒度权限控制
@@ -104,6 +108,10 @@
 │   ├── manager.py      # 技能管理 + 渐进式披露引擎
 │   ├── loader.py       # 技能加载/写入
 │   └── vector_index.py # 技能向量索引
+├── .my_agent/skills/   # Anthropic 风格技能目录
+│   └── explain-code/
+│       ├── SKILL.md
+│       └── reference.md
 ├── knowledge/          # 知识管理
 │   ├── manager.py      # 知识索引与检索
 │   └── vector_db.py    # 向量数据库
@@ -318,6 +326,68 @@ Windows PowerShell 永久写入示例：
 - `LLM_MODEL`：优先级高于配置文件
 - `DEBUG`：开启调试模式
 - `BAIDU_MAPS_MCP_AK`：供 `agent_config.yaml` 中的 `${BAIDU_MAPS_MCP_AK}` 展开使用
+
+### Anthropic 风格 Skill
+
+项目现在支持 Claude/Anthropic 常见的 skill 目录格式，但目录前缀使用项目自己的 `.my_agent`：
+
+```text
+.my_agent/
+└── skills/
+    └── explain-code/
+        ├── SKILL.md
+        └── reference.md
+```
+
+`SKILL.md` 采用 YAML frontmatter + Markdown 正文：
+
+```markdown
+---
+name: explain-code
+description: 解释代码、架构和执行流程；当用户要求“讲解这段代码”“分析模块职责”“说明调用链”时使用。
+argument-hint: [文件或主题]
+allowed-tools:
+  - read
+  - grep
+  - glob
+---
+
+# Explain Code
+
+优先解释作用、主流程、关键实现和使用方式。
+```
+
+使用方式：
+- 自动触发：直接提问“解释 main.py 的主流程”
+- 显式触发：输入 `/explain-code main.py`
+- 查看已加载 skills：在 CLI 中输入 `skills`
+
+模拟启动 `main.py` 后的 skill 体验示例：
+
+```text
+$ python main.py
+
+用户 (kn知识, config配置, cp快照, br分支, mem记忆, swarm蜂群, q退出)> skills
+
+[可用技能]:
+  - explain-code [Anthropic | 自动/手动]: 解释代码、架构和执行流程；当用户要求“讲解这段代码”“分析模块职责”“说明调用链”时使用。
+
+用户 (kn知识, config配置, cp快照, br分支, mem记忆, swarm蜂群, q退出)> /explain-code main.py
+
+FINAL RESULT:
+`main.py` 是整个项目的命令行主入口，负责初始化 Agent、连接 MCP、注册命令菜单，并把用户输入分发到主执行循环。
+
+它的主流程可以分成四段：
+- 启动阶段：检查 API Key、初始化日志、知识库、Skill 系统和 MCP 连接
+- 菜单阶段：处理 `kn`、`config`、`cp`、`br`、`mem`、`swarm`、`skills` 等内置命令
+- 对话阶段：把普通输入交给 `run(...)`，进入 Agent 主循环
+- 输出阶段：统一打印 FINAL RESULT，并展示当前任务计划
+
+技能上下文引用:
+- explain-code
+```
+
+这样既可以把 skill 当成“自动召回的能力”，也可以像命令一样显式触发，便于在主交互流中复用专门的处理模板。
 
 ### 配置文件
 
