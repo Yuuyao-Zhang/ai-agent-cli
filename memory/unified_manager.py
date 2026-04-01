@@ -72,6 +72,9 @@ class UnifiedMemoryManager:
         self.storage_dir = os.path.join(os.getcwd(), ".my_agent", "memory")
         os.makedirs(self.storage_dir, exist_ok=True)
 
+        # 获取当前时间戳以进行可视化命名
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        
         # 配置参数
         self.summary_threshold = 0.8  # 达到80%预算时触发压缩
         self.window_size = 10  # 保持最近N轮对话不被摘要
@@ -80,11 +83,11 @@ class UnifiedMemoryManager:
         # 初始化三层记忆存储
         self.short_term = ShortTermStore(max_rounds=config.app.max_turns_per_agent)
         self.mid_term = MidTermStore(
-            db_path=os.path.join(self.storage_dir, f"memory_{self.session_id}_mid.db")
+            db_path=os.path.join(self.storage_dir, f"session_{timestamp}_{self.session_id}_mid.db")
         )
         self.long_term = LongTermStore(
-            index_path=os.path.join(self.storage_dir, f"memory_{self.session_id}_vectors.pkl"),
-            log_path=os.path.join(self.storage_dir, f"memory_{self.session_id}_logs.jsonl")
+            index_path=os.path.join(self.storage_dir, f"session_{timestamp}_{self.session_id}_vectors.pkl"),
+            log_path=os.path.join(self.storage_dir, f"session_{timestamp}_{self.session_id}_logs.jsonl")
         )
 
         self._round_counter = len(self.session.history)
