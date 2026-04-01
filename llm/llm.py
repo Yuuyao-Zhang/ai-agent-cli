@@ -274,6 +274,19 @@ def call_qwen_embedding(
     api_key: str | None = None,
     embedding_url: str = None
 ) -> List[float]:
+    """调用通义千问（Qwen）Embedding 模型获取文本向量.
+
+    使用标准库 urllib 直接发送 HTTP 请求获取文本的向量表示。
+
+    Args:
+        text: 要向量化的文本
+        model: 模型名称，默认为 "text-embedding-v4"
+        api_key: API 密钥
+        embedding_url: Embedding API URL
+
+    Returns:
+        文本的向量表示列表，失败时返回空列表
+    """
     embedding_url = embedding_url or config.get_llm_embedding_url()
     api_key = api_key or config.get_llm_api_key()
 

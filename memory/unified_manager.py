@@ -3,8 +3,10 @@
 整合三层记忆存储、钩子系统(AOP)和LLM调用。
 """
 
+import os
+import re
 import time
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from state.session import Session
 from common.constant import MAX_TOTAL_TOKENS_PER_AGENT
 from llm.context import estimate_tokens
@@ -64,9 +66,11 @@ class UnifiedMemoryManager:
             session_id: 会话ID
         """
         self.session = session
-        self.session_id = session_id
+        self.session_id = self._sanitize_session_id(session_id)
         self.token_predictor = TokenPredictor()
         self.hooks = HookChain()
+        self.storage_dir = os.path.join(os.getcwd(), ".my_agent", "memory")
+        os.makedirs(self.storage_dir, exist_ok=True)
 
         # 配置参数
         self.summary_threshold = 0.8  # 达到80%预算时触发压缩
@@ -75,18 +79,19 @@ class UnifiedMemoryManager:
 
         # 初始化三层记忆存储
         self.short_term = ShortTermStore(max_rounds=20)
-        self.mid_term = MidTermStore(db_path=f"memory_{session_id}_mid.db")
+        self.mid_term = MidTermStore(
+            db_path=os.path.join(self.storage_dir, f"memory_{self.session_id}_mid.db")
+        )
         self.long_term = LongTermStore(
-            index_path=f"memory_{session_id}_vectors.pkl",
-            log_path=f"memory_{session_id}_logs.jsonl"
+            index_path=os.path.join(self.storage_dir, f"memory_{self.session_id}_vectors.pkl"),
+            log_path=os.path.join(self.storage_dir, f"memory_{self.session_id}_logs.jsonl")
         )
 
-        # 轮次计数器
-        self._round_counter = 0
+        self._round_counter = len(self.session.history)
 
-        # LLM客户端引用
         self.llm_client = None
         self._vectorizer = QwenVectorizer()
+        self._hydrate_short_term()
 
     @property
     def max_tokens(self) -> int:
@@ -182,12 +187,25 @@ class UnifiedMemoryManager:
 
         # 2. 如果有查询，从三层记忆中检索相关内容
         if query:
-            relevant_context = self._retrieve_relevant(query)
+            relevant_context, references, searched_types = self._retrieve_relevant(query)
+            self.session.set("_memory_context_cache", {
+                "query": query,
+                "context": relevant_context,
+                "references": references,
+                "searched_types": searched_types,
+            })
             if relevant_context:
                 messages.append({
                     "role": "system",
                     "content": f"相关历史:\n{relevant_context}"
                 })
+        else:
+            self.session.set("_memory_context_cache", {
+                "query": "",
+                "context": "",
+                "references": [],
+                "searched_types": [],
+            })
 
         # 3. 获取短期记忆(活跃窗口)
         start_idx = self.session.summarized_index
@@ -199,7 +217,7 @@ class UnifiedMemoryManager:
 
         return messages
 
-    def _retrieve_relevant(self, query: str) -> str:
+    def _retrieve_relevant(self, query: str) -> Tuple[str, List[str], List[str]]:
         """检索相关记忆.
 
         Args:
@@ -209,27 +227,64 @@ class UnifiedMemoryManager:
             相关记忆字符串
         """
         context_parts = []
+        references: List[str] = []
+        searched_types = ["短期记忆", "中期记忆", "长期记忆"]
 
-        # 1. 搜索中期记忆摘要
-        mid_results = self.mid_term.search_summaries(query, self.session_id)
-        if mid_results:
-            context_parts.append("=== 相关摘要 ===")
-            for s in mid_results[:3]: # TODO：改成取最相关的3条
-                context_parts.append(f"[{s['created_at'][:10]}] {s['summary']}")
-
-        # 2. 搜索长期记忆向量
-        query_vector = self._simple_vectorize(query)
-        long_results = self.long_term.search_vectors(query_vector, top_k=5)
-        if long_results:
-            context_parts.append("\n=== 相关对话 ===")
-            for v in long_results:
-                raw_log = self.long_term.get_raw_log(v['round_id'])
-                if raw_log:
-                    context_parts.append(
-                        f"[轮次 {v['round_id']}] {raw_log.get('role', 'unknown')}: {raw_log.get('content', '')[:100]}..."
+        short_results = self._search_short_term(query, top_k=3)
+        short_round_ids = {item["round_id"] for item in short_results}
+        if short_results:
+            context_parts.append("=== 短期记忆命中 ===")
+            for item in short_results:
+                context_parts.append(
+                    f"[短期记忆 | 轮次 {item['round_id']} | {item['role']} | score {item['score']:.2f}] {self._truncate_text(item['content'])}"
+                )
+                references.append(
+                    self._format_memory_reference(
+                        "短期记忆",
+                        f"轮次 {item['round_id']} | {item['role']}",
+                        item["score"],
                     )
+                )
 
-        return "\n".join(context_parts) if context_parts else ""
+        mid_results = self._search_mid_term(query, top_k=3)
+        if mid_results:
+            context_parts.append("\n=== 中期记忆命中 ===")
+            for item in mid_results:
+                context_parts.append(
+                    f"[中期记忆 | 轮次 {item['round_start']}-{item['round_end']} | {item['created_at'][:10]} | score {item['score']:.2f}] {self._truncate_text(item['summary'])}"
+                )
+                references.append(
+                    self._format_memory_reference(
+                        "中期记忆",
+                        f"轮次 {item['round_start']}-{item['round_end']} | {item['created_at'][:10]}",
+                        item["score"],
+                    )
+                )
+
+        long_results = self._search_long_term(query, short_round_ids=short_round_ids, top_k=3)
+        if long_results:
+            context_parts.append("\n=== 长期记忆命中 ===")
+            for item in long_results:
+                context_parts.append(
+                    f"[长期记忆 | 轮次 {item['round_id']} | {item['role']} | score {item['score']:.2f}] {self._truncate_text(item['content'])}"
+                )
+                references.append(
+                    self._format_memory_reference(
+                        "长期记忆",
+                        f"轮次 {item['round_id']} | {item['role']}",
+                        item["score"],
+                    )
+                )
+
+        deduped_references = []
+        seen = set()
+        for ref in references:
+            if ref in seen:
+                continue
+            seen.add(ref)
+            deduped_references.append(ref)
+
+        return "\n".join(context_parts) if context_parts else "", deduped_references[:6], searched_types
 
     def _check_and_compress(self):
         """检查Token预算并执行压缩."""
@@ -338,6 +393,17 @@ class UnifiedMemoryManager:
         return pruned
 
     def _simple_vectorize(self, text: str, dim: int = 128) -> List[float]:
+        """简单向量化文本.
+
+        优先使用Qwen向量化器，失败时使用SHA256哈希作为后备方案。
+
+        Args:
+            text: 待向量化的文本
+            dim: 向量维度（后备方案使用）
+
+        Returns:
+            向量列表
+        """
         vec = self._vectorizer.embed(text)
         if vec:
             return vec
@@ -349,6 +415,185 @@ class UnifiedMemoryManager:
             val = (hb[bi] / 255.0) * 2 - 1
             v.append(val)
         return v
+
+    @staticmethod
+    def _sanitize_session_id(session_id: str) -> str:
+        """清理会话ID，使其适合作为文件名.
+
+        移除非法字符，只保留字母、数字、下划线、点和连字符。
+
+        Args:
+            session_id: 原始会话ID
+
+        Returns:
+            清理后的会话ID
+        """
+        sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "_", session_id or "default")
+        return sanitized.strip("._") or "default"
+
+    def _hydrate_short_term(self):
+        """从会话历史中恢复短期记忆.
+
+        将最近的对话历史加载到短期记忆存储中。
+        """
+        recent_history = self.session.history[-self.short_term.max_rounds:]
+        start_round = max(1, self._round_counter - len(recent_history) + 1)
+        for offset, msg in enumerate(recent_history):
+            self.short_term.add(
+                round_id=start_round + offset,
+                content=msg["content"],
+                role=msg["role"],
+            )
+
+    @staticmethod
+    def _tokenize_text(text: str) -> List[str]:
+        """简单的文本分词.
+
+        将文本分割为英文单词、数字或中文字符。
+
+        Args:
+            text: 待分词的文本
+
+        Returns:
+            分词结果列表
+        """
+        return re.findall(r"[a-zA-Z0-9_]+|[\u4e00-\u9fff]", text.lower())
+
+    def _score_text_match(self, query: str, text: str) -> float:
+        """计算文本与查询的匹配分数.
+
+        基于词集交叠度计算Jaccard相似度。
+
+        Args:
+            query: 查询文本
+            text: 待匹配的文本
+
+        Returns:
+            匹配分数，范围 [0.0, 1.0]
+        """
+        query_tokens = set(self._tokenize_text(query))
+        text_tokens = set(self._tokenize_text(text))
+        if not query_tokens or not text_tokens:
+            return 0.0
+        overlap = query_tokens & text_tokens
+        return len(overlap) / max(len(query_tokens), 1)
+
+    @staticmethod
+    def _truncate_text(text: str, limit: int = 120) -> str:
+        """截断文本并添加省略号.
+
+        先规范化空白，然后截断到指定长度。
+
+        Args:
+            text: 待截断的文本
+            limit: 最大长度
+
+        Returns:
+            截断后的文本
+        """
+        normalized = " ".join(str(text).split())
+        if len(normalized) <= limit:
+            return normalized
+        return normalized[:limit] + "..."
+
+    @staticmethod
+    def _format_memory_reference(memory_type: str, label: str, score: float) -> str:
+        """格式化记忆引用信息.
+
+        Args:
+            memory_type: 记忆类型（短期/中期/长期）
+            label: 记忆标签
+            score: 相关度分数
+
+        Returns:
+            格式化的引用字符串
+        """
+        return f"{memory_type} | {label} | Score {score:.2f}"
+
+    def _search_short_term(self, query: str, top_k: int = 3) -> List[Dict[str, object]]:
+        """在短期记忆中搜索相关内容.
+
+        Args:
+            query: 查询文本
+            top_k: 返回结果数量
+
+        Returns:
+            搜索结果列表，每项包含round_id、role、content、score
+        """
+        scored = []
+        for item in self.short_term.get_recent():
+            score = self._score_text_match(query, item.get("content", ""))
+            if score <= 0:
+                continue
+            scored.append({
+                "round_id": item.get("round_id", 0),
+                "role": item.get("role", "unknown"),
+                "content": item.get("content", ""),
+                "score": score,
+            })
+        scored.sort(key=lambda item: (item["score"], item["round_id"]), reverse=True)
+        return scored[:top_k]
+
+    def _search_mid_term(self, query: str, top_k: int = 3) -> List[Dict[str, object]]:
+        """在中期记忆中搜索相关内容.
+
+        Args:
+            query: 查询文本
+            top_k: 返回结果数量
+
+        Returns:
+            搜索结果列表
+        """
+        scored = []
+        for item in self.mid_term.search_summaries("", self.session_id):
+            score = self._score_text_match(query, item.get("summary", ""))
+            if score <= 0:
+                continue
+            enriched = dict(item)
+            enriched["score"] = score
+            scored.append(enriched)
+        scored.sort(key=lambda item: (item["score"], item.get("round_end", 0)), reverse=True)
+        return scored[:top_k]
+
+    def _search_long_term(
+        self,
+        query: str,
+        short_round_ids: Optional[set] = None,
+        top_k: int = 3,
+    ) -> List[Dict[str, object]]:
+        """在长期记忆中搜索相关内容.
+
+        使用向量相似度搜索，并排除已在短期记忆中的内容。
+
+        Args:
+            query: 查询文本
+            short_round_ids: 短期记忆的轮次ID集合（用于去重）
+            top_k: 返回结果数量
+
+        Returns:
+            搜索结果列表
+        """
+        query_vector = self._simple_vectorize(query)
+        short_round_ids = short_round_ids or set()
+        scored = []
+        for item in self.long_term.search_vectors(query_vector, top_k=10):
+            metadata = item.get("metadata", {})
+            if metadata.get("session_id") != self.session_id:
+                continue
+            round_id = item.get("round_id", 0)
+            if round_id in short_round_ids:
+                continue
+            raw_log = self.long_term.get_raw_log(round_id)
+            if not raw_log:
+                continue
+            scored.append({
+                "round_id": round_id,
+                "role": raw_log.get("role", metadata.get("role", "unknown")),
+                "content": raw_log.get("content", ""),
+                "score": float(item.get("score", 0.0)),
+            })
+        scored.sort(key=lambda item: (item["score"], item["round_id"]), reverse=True)
+        return scored[:top_k]
 
     def get_stats(self) -> MemoryStats:
         """获取记忆统计信息.
@@ -370,6 +615,12 @@ class UnifiedMemoryManager:
         self._round_counter = 0
         self.session.global_summary = ""
         self.session.summarized_index = 0
+        self.session.set("_memory_context_cache", {
+            "query": "",
+            "context": "",
+            "references": [],
+            "searched_types": [],
+        })
 
 
 # 全局工厂函数

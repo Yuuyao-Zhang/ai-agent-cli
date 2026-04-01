@@ -12,6 +12,7 @@ class BranchManager:
     """分支管理器."""
 
     def __init__(self):
+        """初始化分支管理器."""
         self.branches: Dict[str, Session] = {}
         self.current_branch_id: Optional[str] = None
 
@@ -35,19 +36,35 @@ class BranchManager:
         return name
 
     def switch_branch(self, name: str) -> Optional[Session]:
-        """切换到指定分支."""
+        """切换到指定分支.
+
+        Args:
+            name: 分支名称
+
+        Returns:
+            切换后的 Session 对象，如果分支不存在则返回 None
+        """
         if name in self.branches:
             self.current_branch_id = name
             return self.branches[name]
         return None
 
     def list_branches(self) -> List[str]:
+        """列出所有分支名称.
+
+        Returns:
+            分支名称列表
+        """
         return list(self.branches.keys())
 
     def merge_branch(self, source_name: str, target_name: str):
         """(高级功能) 合并分支 - 合并对话历史.
 
         将源分支的差异化对话历史合并到目标分支中，并添加合并标记。
+
+        Args:
+            source_name: 源分支名称
+            target_name: 目标分支名称
         """
         if source_name not in self.branches or target_name not in self.branches:
             return

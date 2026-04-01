@@ -12,6 +12,7 @@ Attributes:
 
 import time
 import traceback
+from uuid import uuid4
 from common.constant import (
     MAX_RECURSION_DEPTH,
     MAX_TURNS_PER_AGENT,
@@ -33,11 +34,21 @@ from state.session import Session
 from state.manager import task_manager
 from state.task import TaskStatus
 from state.checkpoint import checkpoint_manager
-from memory import MemoryManager
+from memory import create_memory_manager
 
 
 def append_knowledge_references(response: str, session: Session) -> str:
-    """为最终回答追加知识来源引用."""
+    """为最终回答追加知识来源引用.
+
+    从会话缓存中获取知识来源引用，并格式化追加到回答末尾。
+
+    Args:
+        response: 原始回答文本
+        session: 会话对象
+
+    Returns:
+        追加引用后的回答文本
+    """
     if not response or "知识来源引用" in response:
         return response
 
@@ -56,7 +67,17 @@ def append_knowledge_references(response: str, session: Session) -> str:
 
 
 def append_skill_references(response: str, session: Session) -> str:
-    """为最终回答追加已激活的 skill 引用."""
+    """为最终回答追加已激活的Skill引用.
+
+    从会话缓存中获取Skill引用，并格式化追加到回答末尾。
+
+    Args:
+        response: 原始回答文本
+        session: 会话对象
+
+    Returns:
+        追加引用后的回答文本
+    """
     if not response or "技能上下文引用" in response:
         return response
 
@@ -70,6 +91,35 @@ def append_skill_references(response: str, session: Session) -> str:
 
     reference_lines = ["技能上下文引用:"]
     for ref in references[:3]:
+        reference_lines.append(f"- {ref}")
+    return response.rstrip() + "\n\n" + "\n".join(reference_lines)
+
+
+def append_memory_references(response: str, session: Session) -> str:
+    """为最终回答追加记忆检索引用.
+
+    从会话缓存中获取记忆引用，并格式化追加到回答末尾。
+
+    Args:
+        response: 原始回答文本
+        session: 会话对象
+
+    Returns:
+        追加引用后的回答文本
+    """
+    if not response or "记忆来源引用" in response:
+        return response
+
+    cache = session.get("_memory_context_cache", {})
+    if not isinstance(cache, dict):
+        return response
+
+    references = cache.get("references") or []
+    if not references:
+        return response
+
+    reference_lines = ["记忆来源引用:"]
+    for ref in references[:6]:
         reference_lines.append(f"- {ref}")
     return response.rstrip() + "\n\n" + "\n".join(reference_lines)
 
@@ -101,9 +151,6 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
         session = Session()
         session.task_stack.append(task_desc)
 
-    # v5: 初始化记忆管理器
-    memory_manager = MemoryManager(session)
-
     # Hook: PRE_RUN
     hook_ctx = HookContext(
         hook_type=HookType.PRE_RUN,
@@ -121,6 +168,12 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
         parent_id=parent_task_id
     )
     current_task.start()
+
+    memory_session_id = session.get("_memory_session_id")
+    if not memory_session_id:
+        memory_session_id = uuid4().hex
+        session.set("_memory_session_id", memory_session_id)
+    memory_manager = create_memory_manager(session, session_id=memory_session_id)
 
     # 3. 递归深度检测
     if session.depth > MAX_RECURSION_DEPTH:
@@ -198,6 +251,7 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
                     current_task.complete()
                     final_response = append_knowledge_references(response, session)
                     final_response = append_skill_references(final_response, session)
+                    final_response = append_memory_references(final_response, session)
                     
                     # Hook: POST_RUN
                     hook_ctx = HookContext(
@@ -215,6 +269,7 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
                     current_task.complete()
                     final_response = append_knowledge_references(response, session)
                     final_response = append_skill_references(final_response, session)
+                    final_response = append_memory_references(final_response, session)
                     
                     # Hook: POST_RUN
                     hook_ctx = HookContext(

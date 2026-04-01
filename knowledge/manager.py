@@ -39,7 +39,16 @@ class KnowledgeManager:
 
     @staticmethod
     def _extract_query_terms(query: str) -> List[str]:
-        """提取查询关键词."""
+        """从查询中提取有效关键词.
+
+        使用正则表达式匹配英文标识符和中文字词，过滤停用词。
+
+        Args:
+            query: 查询文本
+
+        Returns:
+            有效关键词列表
+        """
         raw_terms = re.findall(r"[A-Za-z_][A-Za-z0-9_]*|[\u4e00-\u9fff]{2,}", query)
         stop_words = {
             "python", "什么", "什么意思", "什么是", "如何", "怎么", "请问",
@@ -59,7 +68,17 @@ class KnowledgeManager:
 
     @staticmethod
     def _text_overlap_score(text: str, query_terms: List[str]) -> float:
-        """计算文本与查询词的重叠分数."""
+        """计算文本与查询词的重叠分数.
+
+        统计查询词在文本中的出现次数，每个词的贡献最多为1.0。
+
+        Args:
+            text: 待评估的文本
+            query_terms: 查询关键词列表
+
+        Returns:
+            重叠分数，范围 [0, ∞)
+        """
         if not text or not query_terms:
             return 0.0
         lowered = text.lower()
@@ -71,7 +90,16 @@ class KnowledgeManager:
 
     @staticmethod
     def _estimate_code_ratio(text: str) -> float:
-        """估算文本中的代码占比."""
+        """估算文本中的代码占比.
+
+        通过识别代码特征（如关键字、括号、代码块标记等）来估算代码比例。
+
+        Args:
+            text: 待分析的文本
+
+        Returns:
+            代码占比，范围 [0.0, 1.0]
+        """
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         if not lines:
             return 0.0
@@ -87,7 +115,18 @@ class KnowledgeManager:
         return code_like / len(lines)
 
     def _score_parent_result(self, query_terms: List[str], entry: KnowledgeEntry, score: float) -> float:
-        """对父级章节结果做重排评分."""
+        """对父级章节结果做重排评分.
+
+        基于标题、路径和内容的词重叠度调整原始相似度分数，并对目录等内容进行惩罚。
+
+        Args:
+            query_terms: 查询关键词列表
+            entry: 知识条目（章节类型）
+            score: 原始相似度分数
+
+        Returns:
+            调整后的重排分数
+        """
         metadata = entry.metadata or {}
         heading_path = metadata.get("heading_path", "")
         section_title = metadata.get("section_title", "")
@@ -111,7 +150,18 @@ class KnowledgeManager:
         result: Dict[str, Any],
         parent_score: float = 0.0
     ) -> float:
-        """对 chunk 结果做重排与去噪评分."""
+        """对 chunk 结果做重排与去噪评分.
+
+        综合考虑标题、路径、内容、父级章节得分以及代码占比等因素，对原始相似度进行调整。
+
+        Args:
+            query_terms: 查询关键词列表
+            result: chunk 结果字典
+            parent_score: 父级章节的重排分数
+
+        Returns:
+            调整后的重排分数，保留4位小数
+        """
         heading_path = result.get("heading_path", "")
         section_title = result.get("section_title", "")
         content = result.get("content", "")
@@ -138,7 +188,17 @@ class KnowledgeManager:
 
     @staticmethod
     def _dedupe_and_diversify_results(results: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
-        """按 section 去重并做轻量多样性控制."""
+        """按 section 去重并做轻量多样性控制.
+
+        优先选择不同章节的结果，避免结果集中在少数章节。
+
+        Args:
+            results: 待去重的结果列表
+            top_k: 最多返回的结果数量
+
+        Returns:
+            去重和多样化后的结果列表
+        """
         selected = []
         seen_sections = set()
         deferred = []
@@ -159,7 +219,17 @@ class KnowledgeManager:
         return selected
 
     def format_source_references(self, results: List[Dict[str, Any]], limit: int = 3) -> List[str]:
-        """格式化知识来源引用."""
+        """格式化知识来源引用.
+
+        将搜索结果格式化为可读性强的引用列表，去重并限制数量。
+
+        Args:
+            results: 搜索结果列表
+            limit: 最多返回的引用数量
+
+        Returns:
+            格式化的引用字符串列表
+        """
         references = []
         seen = set()
         for result in results[:limit]:
@@ -210,17 +280,47 @@ class KnowledgeManager:
 
     @staticmethod
     def _clean_chunk_text(text: str) -> str:
-        """清理分块文本."""
+        """清理分块文本.
+
+        去除首尾空白，将连续3个及以上换行符压缩为2个。
+
+        Args:
+            text: 原始文本
+
+        Returns:
+            清理后的文本
+        """
         return re.sub(r"\n{3,}", "\n\n", text.strip())
 
     def _build_chunk_id(self, file_path: Path, chunk_index: int, chunk_text: str) -> str:
-        """构建稳定的 chunk ID."""
+        """构建稳定的 chunk ID.
+
+        基于文件路径、索引和内容生成MD5哈希，取前16位作为ID。
+
+        Args:
+            file_path: 文件路径对象
+            chunk_index: chunk 索引
+            chunk_text: chunk 内容
+
+        Returns:
+            16字符的哈希ID
+        """
         raw = f"{self._normalize_path(file_path)}::{chunk_index}::{chunk_text}"
         return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
 
     @staticmethod
     def _detect_section_title(paragraph: str, fallback: str) -> str:
-        """从段落中提取章节标题."""
+        """从段落中提取章节标题.
+
+        取第一行并去除Markdown标题标记作为标题。
+
+        Args:
+            paragraph: 段落文本
+            fallback: 无法提取时的默认标题
+
+        Returns:
+            提取的章节标题
+        """
         lines = [line.strip() for line in paragraph.splitlines() if line.strip()]
         if not lines:
             return fallback
@@ -228,12 +328,34 @@ class KnowledgeManager:
         return first_line or fallback
 
     def _build_section_id(self, file_path: Path, path_titles: List[str], level: int, order: int) -> str:
-        """构建稳定的章节 ID."""
+        """构建稳定的章节 ID.
+
+        基于文件路径、层级、顺序和标题路径生成MD5哈希。
+
+        Args:
+            file_path: 文件路径对象
+            path_titles: 标题路径列表
+            level: 标题层级
+            order: 出现顺序
+
+        Returns:
+            16字符的哈希ID
+        """
         raw = f"{self._normalize_path(file_path)}::{level}::{order}::{' > '.join(path_titles)}"
         return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
 
     def _parse_markdown_sections(self, file_path: Path, text: str) -> List[Dict[str, Any]]:
-        """按 Markdown 标题层级解析章节树."""
+        """按 Markdown 标题层级解析章节树.
+
+        使用栈结构构建嵌套的章节树，同时处理代码块中的内容。
+
+        Args:
+            file_path: 文件路径对象
+            text: Markdown 文本内容
+
+        Returns:
+            章节列表（不包含根节点）
+        """
         lines = text.splitlines()
         root_title = file_path.stem
         root_section: Dict[str, Any] = {
@@ -319,7 +441,18 @@ class KnowledgeManager:
         section_title: str = "全文",
         heading_path: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """将文本切分为适合检索的块."""
+        """将文本切分为适合检索的块.
+
+        使用段落优先策略，结合重叠窗口进行切分，确保语义完整性。
+
+        Args:
+            text: 待切分的文本
+            section_title: 所属章节标题
+            heading_path: 标题路径
+
+        Returns:
+            chunk 列表，每个包含 content、char_start、char_end 等信息
+        """
         cleaned_text = self._clean_chunk_text(text)
         if not cleaned_text:
             return []
@@ -735,7 +868,19 @@ class KnowledgeManager:
     def search_chunks(self, query: str, top_k: int = 5,
                       tags: Optional[List[str]] = None,
                       min_score: float = 0.0) -> List[Dict[str, Any]]:
-        """搜索并返回面向 RAG 的 chunk 结果."""
+        """搜索并返回面向 RAG 的 chunk 结果.
+
+        执行向量搜索、重排序、去重，返回结构化的结果。
+
+        Args:
+            query: 查询文本
+            top_k: 返回结果数量
+            tags: 标签过滤
+            min_score: 最小分数阈值
+
+        Returns:
+            结构化的 chunk 结果列表
+        """
         query_terms = self._extract_query_terms(query)
         formatted_results = []
         raw_results = self.vector_db.search(query, max(top_k * 4, 12), tags)
@@ -771,7 +916,19 @@ class KnowledgeManager:
     def search_hierarchical(self, query: str, top_k: int = 4,
                             parent_top_k: int = 3,
                             min_score: float = 0.2) -> List[Dict[str, Any]]:
-        """执行基于标题层级的父子检索."""
+        """执行基于标题层级的父子检索.
+
+        先检索相关章节，再在这些章节的子chunk中进行精搜，结合层级信息重排。
+
+        Args:
+            query: 查询文本
+            top_k: 最终返回结果数量
+            parent_top_k: 最多考虑的父章节数量
+            min_score: 最小分数阈值
+
+        Returns:
+            结构化的 chunk 结果列表
+        """
         self.sync_auto_sources()
         query_terms = self._extract_query_terms(query)
 

@@ -202,9 +202,22 @@ class ToolRegistry:
         return list(self._local_tools.keys()) + list(self._remote_tools.keys())
 
     def list_tool_specs(self) -> List[Dict[str, Any]]:
+        """获取所有远程工具的规范定义.
+
+        Returns:
+            工具规范字典列表
+        """
         return list(self._tool_specs.values())
 
     def get_tool_spec(self, name: str) -> Optional[Dict[str, Any]]:
+        """获取指定工具的规范定义.
+
+        Args:
+            name: 工具名称
+
+        Returns:
+            工具规范字典，不存在则返回 None
+        """
         return self._tool_specs.get(name)
 
     def set_routing_strategy(self, strategy: RoutingStrategy) -> None:

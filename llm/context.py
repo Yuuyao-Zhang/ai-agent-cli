@@ -128,6 +128,14 @@ def get_recent_file_ops(session: Session, limit: int = RECENT_FILE_OPS_LIMIT) ->
 
 
 def get_available_mcp_tools_text(limit: int = 20) -> str:
+    """获取可用 MCP 工具的文本描述.
+
+    Args:
+        limit: 最多显示的工具数量，默认为 20
+
+    Returns:
+        格式化的 MCP 工具描述文本
+    """
     tool_specs = registry.list_tool_specs()
     if not tool_specs:
         return ""
@@ -180,7 +188,17 @@ def get_recent_file_paths(session: Session, limit: int = RECENT_FILE_OPS_LIMIT) 
 
 
 def get_cached_skill_context(task: str, session: Session) -> str:
-    """获取缓存的 skill 上下文."""
+    """获取缓存的 skill 上下文.
+
+    检查是否有缓存的 skill 上下文，如果没有则重新生成并缓存。
+
+    Args:
+        task: 任务描述
+        session: 当前会话对象
+
+    Returns:
+        格式化的 skill 上下文字符串
+    """
     candidate_paths = get_recent_file_paths(session)
     cache_key = f"{task}|{'|'.join(candidate_paths)}"
     cache = session.get("_skill_context_cache")
@@ -216,6 +234,17 @@ def get_cached_skill_context(task: str, session: Session) -> str:
 
 
 def get_cached_knowledge_context(task: str, session: Session) -> str:
+    """获取缓存的知识库上下文.
+
+    检查是否有缓存的知识库上下文，如果没有则重新搜索并缓存。
+
+    Args:
+        task: 任务描述
+        session: 当前会话对象
+
+    Returns:
+        格式化的知识库上下文字符串
+    """
     cache = session.get("_knowledge_context_cache")
     if isinstance(cache, dict) and cache.get("task") == task:
         return str(cache.get("context", ""))
@@ -430,9 +459,7 @@ class ContextAssembler:
         current_tokens = 0
 
         if memory_manager:
-            # 使用记忆管理器获取上下文 (包含摘要 + 活跃窗口)
-            mem_msgs = memory_manager.get_context()
-            # 倒序遍历以优先保留最近消息
+            mem_msgs = memory_manager.get_context(task)
             for msg in reversed(mem_msgs):
                 msg_tokens = estimate_tokens(msg["content"])
                 if current_tokens + msg_tokens > remaining_for_history:

@@ -19,6 +19,12 @@ class MCPClient:
     """
 
     def __init__(self, server_url: str, timeout: int = 30):
+        """初始化 MCP 客户端.
+
+        Args:
+            server_url: MCP Server 的 URL 地址
+            timeout: 请求超时时间（秒），默认为 30
+        """
         self.server_url = server_url
         self.timeout = timeout
         self.session_id: Optional[str] = None
@@ -27,6 +33,13 @@ class MCPClient:
         self.server_capabilities: Dict[str, Any] = {}
 
     def initialize(self) -> Dict[str, Any]:
+        """初始化与 MCP Server 的会话.
+
+        发送初始化请求，建立会话连接，获取服务器信息和能力。
+
+        Returns:
+            包含服务器信息和能力的字典
+        """
         if self.initialized:
             return {
                 "serverInfo": self.server_info,
@@ -77,7 +90,11 @@ class MCPClient:
         return self._send_request(payload)
 
     def list_tools(self) -> list:
-        """获取服务器提供的工具列表."""
+        """获取服务器提供的工具列表.
+
+        Returns:
+            工具规范字典列表
+        """
         self.initialize()
         payload = {
             "jsonrpc": "2.0",
@@ -91,6 +108,14 @@ class MCPClient:
         return []
 
     def _send_notification(self, method: str, params: Optional[Dict[str, Any]] = None) -> None:
+        """发送 JSON-RPC 通知请求.
+
+        通知请求不期待响应，用于发送事件通知。
+
+        Args:
+            method: JSON-RPC 方法名
+            params: 请求参数字典
+        """
         payload = {
             "jsonrpc": "2.0",
             "method": method,
@@ -99,6 +124,11 @@ class MCPClient:
         self._send_request(payload, expect_response=False)
 
     def _build_headers(self) -> Dict[str, str]:
+        """构建 HTTP 请求头.
+
+        Returns:
+            包含必要请求头的字典
+        """
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
@@ -108,6 +138,19 @@ class MCPClient:
         return headers
 
     def _parse_sse_response(self, response_text: str) -> Dict[str, Any]:
+        """解析 Server-Sent Events (SSE) 响应.
+
+        从 SSE 格式的响应中提取 JSON 数据。
+
+        Args:
+            response_text: SSE 响应文本
+
+        Returns:
+            解析后的 JSON 对象
+
+        Raises:
+            RuntimeError: 无法解析有效数据时抛出
+        """
         events: list[str] = []
         current_data: list[str] = []
         for line in response_text.splitlines():

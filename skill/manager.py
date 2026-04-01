@@ -54,11 +54,17 @@ class SkillManager:
         self._lock = threading.RLock()
 
     def initialize(self) -> None:
-        """初始化加载."""
+        """初始化管理器，加载所有Skills.
+
+        首次使用时调用，完成Skill的加载和索引构建。
+        """
         self.reload()
 
     def reload(self) -> None:
-        """重新加载所有 Skills."""
+        """重新加载所有Skills并重建索引.
+
+        从配置的目录中重新加载所有Skill文件，并重建向量索引。
+        """
         with self._lock:
             new_skills = self.loader.load_all()
             self.skills = new_skills
@@ -165,14 +171,19 @@ class SkillManager:
         candidate_paths: Optional[List[str]] = None,
         min_score: float = 0.0,
     ) -> List[Skill]:
-        """语义检索 Skills.
+        """语义检索Skills.
+
+        基于向量相似度进行语义搜索，并支持多种过滤条件。
 
         Args:
             query: 查询文本
             top_k: 返回结果数量
+            auto_only: 是否只返回支持自动调用的Skill
+            candidate_paths: 候选路径列表，用于路径匹配过滤
+            min_score: 最小分数阈值
 
         Returns:
-            匹配的 Skill 列表
+            匹配的Skill列表
         """
         candidate_paths = candidate_paths or []
         raw_results = self.index.search(query, max(top_k * 4, top_k))
@@ -320,7 +331,16 @@ class SkillManager:
         return "\n".join(lines)
 
     def parse_explicit_invocation(self, task: str) -> Optional[Tuple[Skill, str]]:
-        """解析显式的 /skill-name 调用."""
+        """解析显式的 /skill-name 调用.
+
+        检测任务文本中是否包含显式的Skill调用语法（如 /skill-name）。
+
+        Args:
+            task: 任务文本
+
+        Returns:
+            (Skill, 参数) 元组，或 None
+        """
         match = re.match(r"^\s*/([a-z0-9][a-z0-9-]*)\b(.*)$", task.strip(), re.I)
         if not match:
             return None
@@ -339,7 +359,19 @@ class SkillManager:
         top_k: int = 2,
         min_score: float = 0.18,
     ) -> Tuple[List[Skill], Dict[str, str], bool]:
-        """根据任务选择应激活的 skills."""
+        """根据任务选择应激活的Skills.
+
+        优先解析显式调用，否则使用语义搜索选择合适的Skills。
+
+        Args:
+            task: 任务文本
+            candidate_paths: 候选路径列表
+            top_k: 返回结果数量
+            min_score: 最小分数阈值
+
+        Returns:
+            (Skill列表, 参数映射, 是否显式调用) 元组
+        """
         explicit = self.parse_explicit_invocation(task)
         if explicit:
             skill, arguments = explicit
@@ -362,7 +394,20 @@ class SkillManager:
         min_score: float = 0.18,
         level: DisclosureLevel = DisclosureLevel.DETAILED,
     ) -> Tuple[List[Skill], str, Dict[str, str], bool]:
-        """为当前任务构建 skill prompt."""
+        """为当前任务构建Skill Prompt.
+
+        选择合适的Skills并构建完整的上下文Prompt。
+
+        Args:
+            task: 任务文本
+            candidate_paths: 候选路径列表
+            top_k: 返回结果数量
+            min_score: 最小分数阈值
+            level: 披露级别
+
+        Returns:
+            (Skill列表, Prompt文本, 参数映射, 是否显式调用) 元组
+        """
         skills, arguments_map, explicit = self.select_skills_for_task(
             task,
             candidate_paths=candidate_paths,
@@ -576,5 +621,4 @@ class ProgressiveDisclosureEngine:
 
 manager = SkillManager(
     os.path.join(os.getcwd(), ".my_agent", "skills"),
-    extra_skill_dirs=[os.path.join(os.getcwd(), "skills")],
 )

@@ -57,7 +57,20 @@ def _validate_args(inst_type: str, args: Any) -> tuple[bool, str]:
 
 
 def validate_path(path: str, cwd: str = None) -> str:
-    """验证路径是否安全（在工作目录内）"""
+    """验证路径是否安全（在工作目录内）.
+
+    确保路径在允许的工作目录范围内，防止目录遍历攻击。
+
+    Args:
+        path: 待验证的路径
+        cwd: 工作目录，默认为当前目录
+
+    Returns:
+        安全的绝对路径
+
+    Raises:
+        ValueError: 当路径超出工作目录范围时
+    """
     if cwd is None:
         cwd = os.getcwd()
 
@@ -73,7 +86,16 @@ def validate_path(path: str, cwd: str = None) -> str:
 
 
 def is_command_safe(command: str) -> bool:
-    """简单检查命令安全性"""
+    """简单检查命令安全性.
+
+    通过黑名单机制检查命令是否包含危险操作。
+
+    Args:
+        command: 待检查的命令字符串
+
+    Returns:
+        命令安全返回True，否则返回False
+    """
     # 禁止的命令列表
     DENY_LIST = [
         "rm -rf", "mkfs", "dd", ":(){:|:&};:", "wget", "curl", "nc", "bash -i",
