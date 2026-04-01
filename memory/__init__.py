@@ -11,7 +11,6 @@ from .types import (
     SummaryEntry,
     PromptTemplate
 )
-from .manager import MemoryManager
 from .stores import (
     MemoryStore,
     ShortTermStore,
@@ -35,7 +34,6 @@ __all__ = [
     "MemoryStats",
     "SummaryEntry",
     "PromptTemplate",
-    "MemoryManager",
     "MemoryStore",
     "ShortTermStore",
     "MidTermStore",

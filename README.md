@@ -86,7 +86,6 @@
 │   ├── parser.py       # 指令解析
 │   └── terminal.py     # 终端输出捕获
 ├── memory/             # 分层记忆系统
-│   ├── manager.py      # 分层记忆管理器
 │   ├── unified_manager.py  # 统一记忆管理器
 │   ├── stores/         # 三层存储 (短期/中期/长期)
 │   ├── retriever/      # RAG 检索 (重写/召回/重排)
@@ -249,7 +248,7 @@ def power(base, exponent=2):
     ↓
 ContextAssembler (Token 预算分配)
     ↓
-MemoryManager (分层记忆视图)
+UnifiedMemoryManager (短中长期记忆检索)
     ↓
 KnowledgeManager (层级 RAG 检索 + 来源引用)
     ↓

@@ -134,7 +134,7 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
     集成 Hook System
 
     v5 Agent 循环:
-    集成 MemoryManager, CheckpointManager
+    集成统一记忆管理器, CheckpointManager
     
     Args:
         task_desc: 要执行的任务描述

@@ -424,7 +424,7 @@ class ContextAssembler:
         Args:
             task: 任务描述
             session: 当前会话对象
-            memory_manager: (可选) 分层记忆管理器
+            memory_manager: (可选) 统一记忆管理器
 
         Returns:
             组装后的消息列表，每条消息为包含 role 和 content 的字典

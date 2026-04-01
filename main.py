@@ -251,7 +251,7 @@ def checkpoint_handler(session: Session):
                     session.global_summary = new_session.global_summary
                     session.summarized_index = new_session.summarized_index
 
-                    # 重新初始化 MemoryManager 吗？Agent.run 会新建，但 Main Loop 里的 session 已更新
+                    # Agent.run 会按更新后的 session 重新创建统一记忆管理器
                     info("Session restored successfully.")
                     logger.info(f"Session restored from checkpoint: {cid}")
                 else:
@@ -312,7 +312,7 @@ def branch_handler(session: Session):
 
 def history_handler(session: Session):
     """查看记忆状态."""
-    # MemoryManager 将 global_summary 存储在 session.global_summary (dataclass 字段)
+    # 统一记忆管理器将 global_summary 存储在 session.global_summary (dataclass 字段)
     # 而不是 session namespace 中，所以直接访问字段
     summary = session.global_summary or "(None)"
     print(f"\n[Long Term Memory (Summary)]: {len(summary)} chars")
