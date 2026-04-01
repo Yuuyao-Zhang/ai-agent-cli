@@ -108,6 +108,12 @@ class ToolRegistry:
         Args:
             strategy: 多 Server 路由策略
         """
+        # 确保 mcp 数据目录存在
+        from common.config import config
+        import os
+        if hasattr(config, "app") and hasattr(config.app, "mcp_data_dir"):
+            os.makedirs(config.app.mcp_data_dir, exist_ok=True)
+
         # 存储本地工具函数: {name: function}
         self._local_tools: Dict[str, Any] = {}
         # 存储远程工具客户端: {tool_name: [MCPClient, ...]}

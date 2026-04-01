@@ -57,6 +57,7 @@ class AppConfig:
     log_level: str = "INFO"
     checkpoint_dir: str = "checkpoints"
     vector_db_dir: str = "vectordb"
+    mcp_data_dir: str = "mcp/mcp_data"
     max_recursion_depth: int = 10
     max_turns_per_agent: int = 20
     max_buffer_lines: int = 50
@@ -157,6 +158,11 @@ class ConfigFileManager:
             security_data = data.get("security", {})
             app_data = data.get("app", {})
             mcp_servers_data = data.get("mcpServers", {})
+            
+            # Ensure mcp_data_dir is set properly if missing from config file
+            if "mcp_data_dir" not in app_data:
+                app_data["mcp_data_dir"] = "mcp/mcp_data"
+
             intent_data = data.get("intent", {})
 
             alias_servers: list[str] = []
@@ -224,6 +230,8 @@ class ConfigFileManager:
             self._config.app.checkpoint_dir = os.environ["CHECKPOINT_DIR"]
         if "VECTOR_DB_DIR" in os.environ:
             self._config.app.vector_db_dir = os.environ["VECTOR_DB_DIR"]
+        if "MCP_DATA_DIR" in os.environ:
+            self._config.app.mcp_data_dir = os.environ["MCP_DATA_DIR"]
 
     def reload(self):
         """重新加载配置文件（热重载）."""
@@ -264,6 +272,7 @@ class ConfigFileManager:
                 "log_level": default_config.app.log_level,
                 "checkpoint_dir": default_config.app.checkpoint_dir,
                 "vector_db_dir": default_config.app.vector_db_dir,
+                "mcp_data_dir": default_config.app.mcp_data_dir,
             },
             "mcpServers": {
                 "example-server": {

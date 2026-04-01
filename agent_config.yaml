@@ -16,6 +16,7 @@ app:
   log_level: INFO
   checkpoint_dir: checkpoints
   vector_db_dir: vectordb
+  mcp_data_dir: mcp/mcp_data
 
 mcpServers:
   baidu-maps:
