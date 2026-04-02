@@ -312,6 +312,14 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
         return f"错误: {error_msg}"
 
     def fail_current_task(error_msg: str) -> str:
+        """标记当前任务失败并返回错误消息.
+
+        Args:
+            error_msg: 错误消息
+
+        Returns:
+            格式化的错误消息
+        """
         error(error_msg)
         current_task.fail(error_msg)
         return f"错误: {error_msg}"
