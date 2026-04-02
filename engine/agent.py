@@ -311,6 +311,11 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
         current_task.fail(error_msg)
         return f"错误: {error_msg}"
 
+    def fail_current_task(error_msg: str) -> str:
+        error(error_msg)
+        current_task.fail(error_msg)
+        return f"错误: {error_msg}"
+
     info(f"[{session.depth}] 开始任务: {task_desc} (ID: {current_task.id})")
     memory_manager.add_message("user", f"User Task:\n{task_desc}")
 
@@ -353,14 +358,14 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
             llm_metadata = {}
             if isinstance(llm_result, LLMResponse):
                 response = llm_result.content
+                if llm_result.error:
+                    return fail_current_task(f"LLM API 调用失败: {llm_result.error}")
                 llm_metadata = {
                     LLM_FINISH_REASON_METADATA_KEY: llm_result.finish_reason,
                     "llm_stream_completed": llm_result.stream_completed,
                     "llm_saw_done": llm_result.saw_done,
                     "llm_usage": llm_result.usage,
                 }
-                if llm_result.error:
-                    llm_metadata["llm_error"] = llm_result.error
             else:
                 response = llm_result
             
@@ -378,10 +383,7 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
                 response = hook_ctx.llm_output
             
             if not response:
-                error_msg = "LLM API 调用失败。"
-                error(error_msg)
-                current_task.fail(error_msg)
-                return f"错误: {error_msg}"
+                return fail_current_task("LLM API 调用失败。")
 
             turn_count += 1
             if turn_count > config.app.max_turns_per_agent:
@@ -413,7 +415,7 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
 
             output(f"[{session.depth}] AI: {full_response[:100]}...", color=Colors.DIM)
             # v5: 使用 memory_manager 添加消息
-            memory_manager.add_message("assistant", response)
+            memory_manager.add_message("assistant", full_response)
 
             instructions = parse_commands(full_response)
 
