@@ -5,14 +5,14 @@
 """
 
 import json
-import subprocess
 import os
 import shlex
-from typing import Any
+import subprocess
+from typing import Any, Optional
 
-from todo.store import to_do_store
-from todo.render import renderer
 from mcp.registry import registry
+from todo.render import renderer
+from todo.store import to_do_store
 
 
 def _validate_args(inst_type: str, args: Any) -> tuple[bool, str]:
@@ -56,7 +56,7 @@ def _validate_args(inst_type: str, args: Any) -> tuple[bool, str]:
     return True, ""
 
 
-def validate_path(path: str, cwd: str = None) -> str:
+def validate_path(path: str, cwd: Optional[str] = None) -> str:
     """验证路径是否安全（在工作目录内）.
 
     确保路径在允许的工作目录范围内，防止目录遍历攻击。
@@ -261,7 +261,7 @@ def run_mcp_tool(json_content: str) -> str:
         return f"Error executing tool: {str(e)}"
 
 
-def execute_instruction(inst_type: str, args: Any, cwd: str = None) -> str:
+def execute_instruction(inst_type: str, args: Any, cwd: Optional[str] = None) -> str:
     """根据指令类型分发执行.
 
     Args:

@@ -12,6 +12,7 @@ Attributes:
 
 import time
 import traceback
+from typing import Any
 from uuid import uuid4
 from common.config import config
 from common.constant import (
@@ -27,7 +28,7 @@ from common.security import security_manager
 from common.io_utils import info, debug, error, output, Colors
 from llm.terminal import log_output
 from engine.tools import execute_instruction
-from engine.hooks import HookChain, HookContext, HookType
+from engine.hooks import HookChain, HookContext, HookType, register_builtin_hooks
 
 from state.session import Session
 from state.manager import task_manager
@@ -123,6 +124,35 @@ def append_memory_references(response: str, session: Session) -> str:
     return response.rstrip() + "\n\n" + "\n".join(reference_lines)
 
 
+def _resolve_hook_feedback(context: HookContext, default_message: str) -> str:
+    parts = []
+    for value in (context.reject_reason, context.feedback):
+        if not isinstance(value, str):
+            continue
+        text = value.strip()
+        if text and text not in parts:
+            parts.append(text)
+    return "\n".join(parts) if parts else default_message
+
+
+def _resolve_hook_tool_args(context: HookContext, default_args: Any) -> Any:
+    if not isinstance(context.tool_args, dict):
+        return default_args
+    return context.tool_args.get("args", default_args)
+
+
+def _merge_tool_feedback(tool_result: str, context: HookContext) -> str:
+    feedback = context.feedback
+    if not isinstance(feedback, str):
+        return tool_result
+    feedback = feedback.strip()
+    if not feedback:
+        return tool_result
+    if feedback in tool_result:
+        return tool_result
+    return f"{tool_result}\n[HOOK_FEEDBACK]\n{feedback}"
+
+
 def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> str:
     """执行 Agent 任务循环.
 
@@ -143,6 +173,7 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
     Returns:
         任务执行结果或错误信息
     """
+    register_builtin_hooks()
     hooks = HookChain()
     
     # 1. 初始化会话
@@ -158,7 +189,7 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
     )
     hooks.execute(HookType.PRE_RUN, hook_ctx)
     if hook_ctx.is_propagation_stopped:
-        return "任务被 PRE_RUN 钩子终止。"
+        return _resolve_hook_feedback(hook_ctx, "任务被 PRE_RUN 钩子终止。")
 
     # 2. 创建并注册任务
     current_task = task_manager.create_task(
@@ -215,6 +246,8 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
                 llm_input=final_messages
             )
             hooks.execute(HookType.PRE_LLM, hook_ctx)
+            if hook_ctx.llm_input is not None:
+                final_messages = hook_ctx.llm_input
 
             response = call_qwen(final_messages, stream=True)
             
@@ -227,6 +260,8 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
                 llm_output=response
             )
             hooks.execute(HookType.POST_LLM, hook_ctx)
+            if hook_ctx.llm_output is not None:
+                response = hook_ctx.llm_output
             
             if not response:
                 error_msg = "LLM API 调用失败。"
@@ -238,6 +273,16 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
             if turn_count > config.app.max_turns_per_agent:
                 current_task.fail("达到最大对话轮数")
                 return "错误: 达到最大对话轮数。任务未完成。"
+
+            if hook_ctx.is_propagation_stopped:
+                memory_manager.add_message(
+                    "user",
+                    _resolve_hook_feedback(
+                        hook_ctx,
+                        "上一轮响应未通过钩子校验，请根据反馈修正后继续。"
+                    )
+                )
+                continue
 
             output(f"[{session.depth}] AI: {response[:100]}...", color=Colors.DIM)
             # v5: 使用 memory_manager 添加消息
@@ -260,6 +305,7 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
                         metadata={"result": final_response}
                     )
                     hooks.execute(HookType.POST_RUN, hook_ctx)
+                    final_response = hook_ctx.metadata.get("result", final_response)
                     return final_response
 
                 if len(response.strip()) > MIN_RESPONSE_LENGTH and not any(
@@ -278,6 +324,7 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
                         metadata={"result": final_response}
                     )
                     hooks.execute(HookType.POST_RUN, hook_ctx)
+                    final_response = hook_ctx.metadata.get("result", final_response)
                     return final_response
 
                 # v5: 使用 memory_manager 添加消息
@@ -313,8 +360,14 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
                     tool_args={"args": inst_args}
                 )
                 hooks.execute(HookType.PRE_TOOL, hook_ctx)
+                inst_args = _resolve_hook_tool_args(hook_ctx, inst_args)
                 if hook_ctx.is_propagation_stopped:
-                    results.append(f"工具 {inst_type} 被钩子拦截。")
+                    results.append(
+                        _resolve_hook_feedback(
+                            hook_ctx,
+                            f"工具 {inst_type} 被钩子拦截。"
+                        )
+                    )
                     continue
 
                 if inst_type == 'subtask':
@@ -324,14 +377,12 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
                     sub_session = session.fork(sub_task_desc)
                     # 递归调用，传入当前任务 ID 作为父 ID
                     sub_result = run(sub_task_desc, sub_session, parent_task_id=current_task.id)
-                    results.append(f"子任务结果:\n{sub_result}")
                     output_res = sub_result
                 else:
                     output_res = execute_instruction(inst_type, inst_args, cwd=session.get('cwd', '.'))
                     log_output(
                         f"指令 ({inst_type}): {inst_args}\n输出:\n{output_res}"
                     )
-                    results.append(f"[{inst_type}] 结果:\n{output_res}")
 
                 # Hook: POST_TOOL
                 hook_ctx = HookContext(
@@ -343,6 +394,12 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
                     tool_result=str(output_res)
                 )
                 hooks.execute(HookType.POST_TOOL, hook_ctx)
+                output_res = hook_ctx.tool_result if hook_ctx.tool_result is not None else str(output_res)
+                output_res = _merge_tool_feedback(output_res, hook_ctx)
+                if inst_type == 'subtask':
+                    results.append(f"子任务结果:\n{output_res}")
+                else:
+                    results.append(f"[{inst_type}] 结果:\n{output_res}")
 
             if user_cancelled:
                 current_task.fail("用户取消")

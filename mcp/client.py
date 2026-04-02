@@ -6,15 +6,16 @@
 
 import json
 import time
-import urllib.request
-import urllib.error
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Optional
+
+import urllib.error
+import urllib.request
 
 
 class MCPClient:
     """MCP 客户端.
-    
+
     负责与 MCP Server 进行通信，发送 JSON-RPC 2.0 请求。
     """
 
@@ -29,10 +30,10 @@ class MCPClient:
         self.timeout = timeout
         self.session_id: Optional[str] = None
         self.initialized = False
-        self.server_info: Dict[str, Any] = {}
-        self.server_capabilities: Dict[str, Any] = {}
+        self.server_info: dict[str, Any] = {}
+        self.server_capabilities: dict[str, Any] = {}
 
-    def initialize(self) -> Dict[str, Any]:
+    def initialize(self) -> dict[str, Any]:
         """初始化与 MCP Server 的会话.
 
         发送初始化请求，建立会话连接，获取服务器信息和能力。
@@ -66,7 +67,7 @@ class MCPClient:
         self.initialized = True
         return result if isinstance(result, dict) else {}
 
-    def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+    def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         """调用远程工具.
 
         Args:
@@ -107,7 +108,11 @@ class MCPClient:
             return result.get("tools", [])
         return []
 
-    def _send_notification(self, method: str, params: Optional[Dict[str, Any]] = None) -> None:
+    def _send_notification(
+        self,
+        method: str,
+        params: Optional[dict[str, Any]] = None
+    ) -> None:
         """发送 JSON-RPC 通知请求.
 
         通知请求不期待响应，用于发送事件通知。
@@ -123,7 +128,7 @@ class MCPClient:
         }
         self._send_request(payload, expect_response=False)
 
-    def _build_headers(self) -> Dict[str, str]:
+    def _build_headers(self) -> dict[str, str]:
         """构建 HTTP 请求头.
 
         Returns:
@@ -137,7 +142,7 @@ class MCPClient:
             headers["Mcp-Session-Id"] = self.session_id
         return headers
 
-    def _parse_sse_response(self, response_text: str) -> Dict[str, Any]:
+    def _parse_sse_response(self, response_text: str) -> dict[str, Any]:
         """解析 Server-Sent Events (SSE) 响应.
 
         从 SSE 格式的响应中提取 JSON 数据。
@@ -176,7 +181,7 @@ class MCPClient:
 
     def _send_request(
         self,
-        payload: Dict[str, Any],
+        payload: dict[str, Any],
         max_retries: int = 3,
         backoff_factor: float = 1.0,
         expect_response: bool = True,
@@ -214,7 +219,12 @@ class MCPClient:
                         return {}
 
                     content_type = response.headers.get("Content-Type", "")
-                    if "text/event-stream" in content_type or resp_data.lstrip().startswith("event:") or resp_data.lstrip().startswith("data:"):
+                    is_sse = (
+                        "text/event-stream" in content_type
+                        or resp_data.lstrip().startswith("event:")
+                        or resp_data.lstrip().startswith("data:")
+                    )
+                    if is_sse:
                         resp_json = self._parse_sse_response(resp_data)
                     else:
                         resp_json = json.loads(resp_data)

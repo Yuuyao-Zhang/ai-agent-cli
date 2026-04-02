@@ -1,15 +1,15 @@
 """配置文件管理模块.
 
 该模块支持从 YAML 配置文件加载配置，同时保留环境变量支持。
-配置加载优先级：环境变量 > 配置文件 > 默认值
+配置加载优先级：环境变量 > 配置文件 > 默认值。
 """
 
-import os
 import json
+import os
 import re
-from typing import Any, Dict, Optional, Union
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Dict, Optional, Union
 
 try:
     import yaml

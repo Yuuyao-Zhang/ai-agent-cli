@@ -5,15 +5,14 @@
 方便后续扩展（如 WebSocket 或 GUI 适配）。
 """
 
-import sys
 import platform
+import sys
+from typing import Optional
 
-
-# 检测是否为 Windows 系统
 IS_WINDOWS = platform.system() == "Windows"
 
 
-def safe_text(text: str, stream=sys.stdout) -> str:
+def safe_text(text: str, stream: Optional[object] = None) -> str:
     """安全处理文本，确保可以正确输出到指定流.
 
     处理可能包含不可打印字符的文本，确保在输出到控制台时不会出错。

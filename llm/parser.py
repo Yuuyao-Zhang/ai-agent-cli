@@ -6,10 +6,10 @@
 
 import json
 import re
-from typing import List, Tuple, Any
+from typing import Any
 
 
-def _parse_json_commands(data: Any) -> List[Tuple[str, Any]]:
+def _parse_json_commands(data: Any) -> list[tuple[str, Any]]:
     """从JSON数据中解析命令.
 
     支持多种JSON格式的命令解析。
@@ -49,7 +49,7 @@ def _parse_json_commands(data: Any) -> List[Tuple[str, Any]]:
     return commands
 
 
-def parse_commands(text: str) -> List[Tuple[str, Any]]:
+def parse_commands(text: str) -> list[tuple[str, Any]]:
     """解析 LLM 响应，提取结构化指令.
 
     优先尝试解析 JSON 格式的结构化指令，如果失败则回退到正则匹配。
@@ -80,16 +80,15 @@ def parse_commands(text: str) -> List[Tuple[str, Any]]:
     Returns:
         指令列表，每个元素为 (指令类型, 指令内容) 的元组
     """
-    # 1. 尝试解析 JSON 结构化指令
     text_stripped = text.strip()
-    if text_stripped.startswith('{') or text_stripped.startswith('['):
+    if text_stripped.startswith("{") or text_stripped.startswith("["):
         try:
             data = json.loads(text_stripped)
             commands = _parse_json_commands(data)
             if commands:
                 return commands
         except json.JSONDecodeError:
-            pass  # JSON 解析失败，回退到正则
+            pass
 
     json_block_pattern = r"```json\s*(.*?)\s*```"
     for match in re.finditer(json_block_pattern, text, re.DOTALL | re.IGNORECASE):
@@ -102,36 +101,38 @@ def parse_commands(text: str) -> List[Tuple[str, Any]]:
         except json.JSONDecodeError:
             continue
 
-    # 2. 回退到正则解析 (兼容旧协议)
-    # 增强正则，支持多种 Shell 标签
     bash_pattern = r"```(?:bash|shell|sh|zsh|powershell|cmd)\n(.*?)\n```"
 
-    # 统一正则匹配，保持指令顺序
     patterns = [
-        ('bash', bash_pattern),
-        ('read', r"```read\n(.*?)\n```"),
-        ('write', r"```write (.*?)\n(.*?)\n```"),
-        ('edit', r"```edit (.*?)\n<<OLD\n(.*?)\nOLD\n<<NEW\n(.*?)\nNEW\n```"),
-        ('todo', r"```todo\n(.*?)\n```"),
-        ('subtask', r"SUBTASK: (.*)")
+        ("bash", bash_pattern),
+        ("read", r"```read\n(.*?)\n```"),
+        ("write", r"```write (.*?)\n(.*?)\n```"),
+        ("edit", r"```edit (.*?)\n<<OLD\n(.*?)\nOLD\n<<NEW\n(.*?)\nNEW\n```"),
+        ("todo", r"```todo\n(.*?)\n```"),
+        ("subtask", r"SUBTASK: (.*)")
     ]
 
     commands = []
-    
-    # 对每种模式进行查找，并记录 (index, type, content)
+
     for cmd_type, pattern in patterns:
-        for match in re.finditer(pattern, text, re.DOTALL | re.IGNORECASE if cmd_type == 'bash' else re.DOTALL):
-            if cmd_type == 'write':
+        for match in re.finditer(
+            pattern,
+            text,
+            re.DOTALL | re.IGNORECASE if cmd_type == "bash" else re.DOTALL
+        ):
+            if cmd_type == "write":
                 content = (match.group(1).strip(), match.group(2).strip())
-            elif cmd_type == 'edit':
-                content = (match.group(1).strip(), match.group(2).strip(), match.group(3).strip())
+            elif cmd_type == "edit":
+                content = (
+                    match.group(1).strip(),
+                    match.group(2).strip(),
+                    match.group(3).strip()
+                )
             else:
                 content = match.group(1).strip()
-            
+
             commands.append((match.start(), cmd_type, content))
-    
-    # 按在文本中出现的顺序排序
+
     commands.sort(key=lambda x: x[0])
-    
-    # 返回 (type, content) 列表
+
     return [(cmd[1], cmd[2]) for cmd in commands]

@@ -1,4 +1,8 @@
-"""向量索引模块."""
+"""向量索引模块.
+
+基于 Qwen Embedding 的向量索引实现，支持多级别披露的向量检索。
+用于 Skill 的语义搜索和匹配。
+"""
 
 import math
 from typing import Dict, List, Tuple
@@ -68,45 +72,47 @@ class VectorIndex:
                 f"{skill.name} {skill.description} {skill.category} "
                 f"{skill.argument_hint}"
             )
-        elif level == DisclosureLevel.SUMMARY:
+        if level == DisclosureLevel.SUMMARY:
             tags_str = " ".join(skill.tags)
             tools_str = " ".join(skill.allowed_tools)
             return (
                 f"{skill.name} {skill.description} {skill.summary} "
                 f"{skill.category} {tags_str} {tools_str}"
             )
-        else:
-            tags_str = " ".join(skill.tags)
-            tools_str = " ".join(skill.allowed_tools)
-            params_str = " ".join(
-                f"{p.name} {p.description}" for p in skill.parameters
-            )
-            examples_str = " ".join(
-                f"{e.description} {e.input} {e.output}"
-                for e in skill.examples
-            )
-            hints_str = " ".join(h.suggestion for h in skill.hints)
-            paths_str = " ".join(skill.paths)
-            supporting_str = " ".join(
-                item.path for item in skill.supporting_files
-            )
-            return (
-                (f"{skill.name} " * 3) +
-                (f"{skill.description} " * 2) +
-                f"{skill.summary} " +
-                f"{skill.content} " +
-                f"{skill.category} " +
-                f"{tags_str} " +
-                f"{tools_str} " +
-                f"{params_str} " +
-                f"{examples_str} " +
-                f"{hints_str} " +
-                f"{paths_str} " +
-                f"{supporting_str}"
-            )
+        tags_str = " ".join(skill.tags)
+        tools_str = " ".join(skill.allowed_tools)
+        params_str = " ".join(
+            f"{p.name} {p.description}" for p in skill.parameters
+        )
+        examples_str = " ".join(
+            f"{e.description} {e.input} {e.output}"
+            for e in skill.examples
+        )
+        hints_str = " ".join(h.suggestion for h in skill.hints)
+        paths_str = " ".join(skill.paths)
+        supporting_str = " ".join(
+            item.path for item in skill.supporting_files
+        )
+        return (
+            (f"{skill.name} " * 3) +
+            (f"{skill.description} " * 2) +
+            f"{skill.summary} " +
+            f"{skill.content} " +
+            f"{skill.category} " +
+            f"{tags_str} " +
+            f"{tools_str} " +
+            f"{params_str} " +
+            f"{examples_str} " +
+            f"{hints_str} " +
+            f"{paths_str} " +
+            f"{supporting_str}"
+        )
 
     def search(
-        self, query: str, top_k: int = 3, level: DisclosureLevel = DisclosureLevel.DETAILED
+        self,
+        query: str,
+        top_k: int = 3,
+        level: DisclosureLevel = DisclosureLevel.DETAILED
     ) -> List[Tuple[Skill, float]]:
         """搜索 Skills.
 
@@ -150,7 +156,11 @@ class VectorIndex:
         results.sort(key=lambda x: x[1], reverse=True)
         return results[:top_k]
 
-    def _get_level_vector(self, skill_name: str, level: DisclosureLevel) -> List[float]:
+    def _get_level_vector(
+        self,
+        skill_name: str,
+        level: DisclosureLevel
+    ) -> List[float]:
         """获取指定级别的向量.
 
         Args:
@@ -162,13 +172,15 @@ class VectorIndex:
         """
         if level == DisclosureLevel.BRIEF:
             return self.brief_index.get(skill_name, [])
-        elif level == DisclosureLevel.SUMMARY:
+        if level == DisclosureLevel.SUMMARY:
             return self.summary_index.get(skill_name, [])
-        else:
-            return self.detailed_index.get(skill_name, [])
+        return self.detailed_index.get(skill_name, [])
 
     def search_by_level(
-        self, query: str, level: DisclosureLevel, top_k: int = 3
+        self,
+        query: str,
+        level: DisclosureLevel,
+        top_k: int = 3
     ) -> List[Tuple[Skill, float]]:
         """按指定披露级别搜索 Skills.
 
@@ -212,8 +224,19 @@ class VectorIndex:
         return dot_product / (norm_v1 * norm_v2)
 
     @staticmethod
-    def _lexical_similarity(query_tokens: List[str], doc_tokens: List[str]) -> float:
-        """基于词项重合的兜底相似度."""
+    def _lexical_similarity(
+        query_tokens: List[str],
+        doc_tokens: List[str]
+    ) -> float:
+        """基于词项重合的兜底相似度.
+
+        Args:
+            query_tokens: 查询词列表
+            doc_tokens: 文档词列表
+
+        Returns:
+            相似度分数
+        """
         if not query_tokens or not doc_tokens:
             return 0.0
 
@@ -227,7 +250,11 @@ class VectorIndex:
         precision = len(overlap) / len(doc_set)
         return coverage * 0.8 + precision * 0.2
 
-    def get_skill_keywords(self, skill_name: str, top_n: int = 10) -> List[Tuple[str, float]]:
+    def get_skill_keywords(
+        self,
+        skill_name: str,
+        top_n: int = 10
+    ) -> List[Tuple[str, float]]:
         """获取 Skill 的关键词（预留功能）.
 
         Args:

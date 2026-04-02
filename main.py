@@ -10,29 +10,38 @@ Attributes:
 import os
 import sys
 
-# Ensure project root is in path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 
-from engine.agent import run  # noqa: E402
-from common.io_utils import input_request, info, error, Colors, safe_text  # noqa: E402
-from state.manager import task_manager  # noqa: E402
-from state.session import Session  # noqa: E402
-from llm.terminal import log_output  # noqa: E402
-from todo.render import renderer  # noqa: E402
-from todo.store import to_do_store  # noqa: E402
-from common.config import config, config_file_manager, YAML_AVAILABLE
-from skill.manager import manager  # noqa: E402
-from mcp.registry import registry, sanitize_server_url  # noqa: E402
-from swarm.planner import MapReducePlanner  # noqa: E402
-from swarm.scheduler import SwarmScheduler  # noqa: E402
-from swarm.consensus import ConsensusStrategy  # noqa: E402
-from engine.hooks import HookRegistry, HookType  # noqa: E402
-from state.checkpoint import checkpoint_manager  # noqa: E402
-from state.branch import branch_manager  # noqa: E402
-
-from knowledge import knowledge_manager  # noqa: E402
-from common.logger import logger  # noqa: E402
-from mcp.registry import registry as tool_registry  # noqa: E402
+from common.config import (
+    config,
+    config_file_manager,
+    YAML_AVAILABLE,
+)
+from common.io_utils import (
+    Colors,
+    error,
+    info,
+    input_request,
+    safe_text,
+)
+from common.logger import logger
+from engine.agent import run
+from engine.hooks import HookRegistry, HookType, register_builtin_hooks
+from knowledge import knowledge_manager
+from llm.terminal import log_output
+from mcp.registry import registry, sanitize_server_url
+from skill.manager import manager
+from state.branch import branch_manager
+from state.checkpoint import checkpoint_manager
+from state.manager import task_manager
+from state.session import Session
+from swarm.consensus import ConsensusStrategy
+from swarm.planner import MapReducePlanner
+from swarm.scheduler import SwarmScheduler
+from todo.render import renderer
+from todo.store import to_do_store
 
 
 
@@ -450,8 +459,12 @@ def main():
             print("或使用 'config' 命令创建配置文件。")
 
         info("正在初始化 AI Agent...")
-        info("特性: 知识管理, Skill 系统, MCP 工具, 配置文件, 日志系统, 分层记忆, 快照回溯, 分支管理, 蜂群智能")
+        info(
+            "特性: 知识管理, Skill 系统, MCP 工具, 配置文件, "
+            "日志系统, 分层记忆, 快照回溯, 分支管理, 蜂群智能"
+        )
         logger.info("AI Agent initialized")
+        register_builtin_hooks()
 
         # 初始化 Skill 系统
         manager.initialize()
@@ -495,7 +508,9 @@ def main():
             while True:
                 try:
                     task = input_request(
-                        "\n用户 (kn知识, config配置, cp快照, br分支, mem记忆, skills技能, tools工具, hooks钩子, connect连接, swarm蜂群, q退出)> "
+                        "\n用户 (kn知识, config配置, cp快照, br分支, "
+                        "mem记忆, skills技能, tools工具, hooks钩子, "
+                        "connect连接, swarm蜂群, q退出)> "
                     )
                     cmd = task.strip().lower()
 

@@ -102,7 +102,7 @@ def call_qwen(
     api_key: str | None = None,
     base_url: str = None,
     stream: bool = False,
-    use_cache: bool = True  # 新增参数
+    use_cache: bool = True
 ) -> str:
     """调用通义千问（Qwen）模型的函数.
 
@@ -120,16 +120,13 @@ def call_qwen(
     Returns:
         模型生成的文本内容
     """
-    # 0. 检查缓存 (Semantic KV-Cache)
     if use_cache and KV_CACHE_AVAILABLE and not stream:
-        # 将消息列表序列化为查询字符串 (Key)
         query_text = json.dumps(messages, ensure_ascii=False)
         cached_response = kv_cache.get(query_text)
         if cached_response:
             print("[LLM] Cache Hit! Using Semantic KV-Cache result.")
             return cached_response
 
-    # 配置加载优先级：参数 > 环境变量 > 默认值
     model = model or config.llm.model
     base_url = base_url or config.llm.base_url
     api_key = api_key or config.llm.api_key
@@ -146,16 +143,14 @@ def call_qwen(
         "Content-Type": "application/json"
     }
 
-    # 构造请求数据
     payload = {
         "model": model,
         "messages": messages,
         "stream": stream
     }
-    
-    # 简单的可观测性：记录开始时间
+
     start_time = time.time()
-    
+
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         base_url, data=data, headers=headers, method="POST"
@@ -202,41 +197,34 @@ def call_qwen(
                     ):
                         print()
                     content = "".join(answer_parts)
-                    
-                    # 记录结束时间和Token估算
+
                     duration = time.time() - start_time
                     print(f"[Metrics] Latency: {duration:.2f}s | Approx Tokens: {len(content)//4}")
-                    
-                    # 写入缓存
+
                     if use_cache and KV_CACHE_AVAILABLE and content:
                         query_text = json.dumps(messages, ensure_ascii=False)
                         kv_cache.set(query_text, content)
-                        
+
                     return content
                 else:
-                    # 非流式处理
                     result = json.loads(response.read().decode("utf-8"))
                     content = result["choices"][0]["message"]["content"]
-                    
-                    # 记录结束时间和Token估算
+
                     duration = time.time() - start_time
                     print(f"[Metrics] Latency: {duration:.2f}s | Approx Tokens: {len(content)//4}")
-                    
-                    # 写入缓存
+
                     if use_cache and KV_CACHE_AVAILABLE and content:
                         query_text = json.dumps(messages, ensure_ascii=False)
                         kv_cache.set(query_text, content)
-                        
+
                     return content
         except urllib.error.HTTPError as e:
-            # 认证错误 (401/403) 和客户端错误 (400) 不应重试
             if e.code in (400, 401, 403):
                 print(
                     f"[LLM Error] Authentication/Client error {e.code}: {e}",
                     file=sys.stderr
                 )
                 return ""
-            # 服务器错误 (500, 502, 503, 504) 可以重试
             if attempt == config.llm.max_retries - 1:
                 print(
                     f"[LLM Error] Request failed after {config.llm.max_retries} "
@@ -245,7 +233,6 @@ def call_qwen(
                 )
                 return ""
 
-            # 指数退避: 1s, 2s, 4s
             wait_time = 2 ** attempt
             time.sleep(wait_time)
         except urllib.error.URLError as e:
@@ -257,7 +244,6 @@ def call_qwen(
                 )
                 return ""
 
-            # 指数退避: 1s, 2s, 4s
             wait_time = 2 ** attempt
             time.sleep(wait_time)
         except Exception as e:

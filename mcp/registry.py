@@ -4,14 +4,26 @@
 支持多 Server 路由策略。
 """
 
+import os
+import random
 from enum import Enum
-from typing import Dict, Any, Optional, List
-from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+from typing import Any, Optional
+from urllib.parse import urlencode, urlunsplit, parse_qsl, urlsplit
+
+from common.config import config
 from common.logger import logger
 from mcp.client import MCPClient
 
 
 def sanitize_server_url(server_url: str) -> str:
+    """清理 URL 中的敏感信息.
+
+    Args:
+        server_url: 原始服务器 URL
+
+    Returns:
+        清理后的 URL
+    """
     parts = urlsplit(server_url)
     if not parts.query:
         return server_url
@@ -65,7 +77,7 @@ class ToolRouter:
         self.strategy = strategy
         self._round_robin_index = 0
 
-    def select_client(self, clients: List[MCPClient]) -> Optional[MCPClient]:
+    def select_client(self, clients: list[MCPClient]) -> Optional[MCPClient]:
         """根据策略选择客户端.
 
         Args:
@@ -79,12 +91,11 @@ class ToolRouter:
 
         if self.strategy == RoutingStrategy.FIRST_AVAILABLE:
             return clients[0]
-        elif self.strategy == RoutingStrategy.ROUND_ROBIN:
+        if self.strategy == RoutingStrategy.ROUND_ROBIN:
             client = clients[self._round_robin_index % len(clients)]
             self._round_robin_index += 1
             return client
-        elif self.strategy == RoutingStrategy.RANDOM:
-            import random
+        if self.strategy == RoutingStrategy.RANDOM:
             return random.choice(clients)
 
         return clients[0]
@@ -108,21 +119,13 @@ class ToolRegistry:
         Args:
             strategy: 多 Server 路由策略
         """
-        # 确保 mcp 数据目录存在
-        from common.config import config
-        import os
         if hasattr(config, "app") and hasattr(config.app, "mcp_data_dir"):
             os.makedirs(config.app.mcp_data_dir, exist_ok=True)
 
-        # 存储本地工具函数: {name: function}
-        self._local_tools: Dict[str, Any] = {}
-        # 存储远程工具客户端: {tool_name: [MCPClient, ...]}
-        self._remote_tools: Dict[str, List[MCPClient]] = {}
-        # 存储工具元信息: {tool_name: metadata}
-        self._tool_specs: Dict[str, Dict[str, Any]] = {}
-        # 存储 MCP Server 客户端实例
-        self._mcp_clients: List[MCPClient] = []
-        # 路由器
+        self._local_tools: dict[str, Any] = {}
+        self._remote_tools: dict[str, list[MCPClient]] = {}
+        self._tool_specs: dict[str, dict[str, Any]] = {}
+        self._mcp_clients: list[MCPClient] = []
         self._router = ToolRouter(strategy)
 
     def register_local_tool(self, name: str, func: Any) -> None:
@@ -178,7 +181,7 @@ class ToolRegistry:
             clients = self._remote_tools[name]
 
             # 返回包装器，使用路由策略选择客户端
-            def remote_wrapper(args: Dict[str, Any]) -> Any:
+            def remote_wrapper(args: dict[str, Any]) -> Any:
                 """远程工具调用包装器.
 
                 Args:
@@ -199,7 +202,7 @@ class ToolRegistry:
 
         return None
 
-    def list_all_tools(self) -> List[str]:
+    def list_all_tools(self) -> list[str]:
         """列出所有可用工具名称.
 
         Returns:
@@ -207,7 +210,7 @@ class ToolRegistry:
         """
         return list(self._local_tools.keys()) + list(self._remote_tools.keys())
 
-    def list_tool_specs(self) -> List[Dict[str, Any]]:
+    def list_tool_specs(self) -> list[dict[str, Any]]:
         """获取所有远程工具的规范定义.
 
         Returns:
@@ -215,7 +218,7 @@ class ToolRegistry:
         """
         return list(self._tool_specs.values())
 
-    def get_tool_spec(self, name: str) -> Optional[Dict[str, Any]]:
+    def get_tool_spec(self, name: str) -> Optional[dict[str, Any]]:
         """获取指定工具的规范定义.
 
         Args:
@@ -235,5 +238,4 @@ class ToolRegistry:
         self._router.strategy = strategy
 
 
-# 全局注册中心实例（使用默认路由策略）
 registry = ToolRegistry()

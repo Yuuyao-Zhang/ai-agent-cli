@@ -20,12 +20,12 @@ class PromptManager:
         # 摘要生成模板
         self.register_template(PromptTemplate(
             name="conversation_summary",
-            template="""你是一个摘要助手。请用中文简洁地总结以下对话。保留关键事实、决策和代码变更。
-
-已有摘要: {existing_summary}
-
-新对话:
-{conversation}""",
+            template=(
+                "你是一个摘要助手。请用中文简洁地总结以下对话。"
+                "保留关键事实、决策和代码变更。\n\n"
+                "已有摘要: {existing_summary}\n\n"
+                "新对话:\n{conversation}"
+            ),
             description="对话摘要生成",
             variables=["existing_summary", "conversation"],
             category="memory"
@@ -34,11 +34,12 @@ class PromptManager:
         # 查询重写模板
         self.register_template(PromptTemplate(
             name="query_rewrite",
-            template="""将以下查询重写为3个不同的变体，用于更好地捕获潜在意图：
-
-原始查询: {query}
-
-请以JSON数组格式返回3个重写的查询。""",
+            template=(
+                "将以下查询重写为3个不同的变体，"
+                "用于更好地捕获潜在意图：\n\n"
+                "原始查询: {query}\n\n"
+                "请以JSON数组格式返回3个重写的查询。"
+            ),
             description="查询重写",
             variables=["query"],
             category="retrieval"
@@ -47,15 +48,14 @@ class PromptManager:
         # 代码解释模板
         self.register_template(PromptTemplate(
             name="code_explanation",
-            template="""请用简单易懂的方式解释以下代码：
-
-代码:
-{code}
-
-请包括：
-1. 代码的主要功能
-2. 关键实现细节
-3. 使用示例""",
+            template=(
+                "请用简单易懂的方式解释以下代码：\n\n"
+                "代码:\n{code}\n\n"
+                "请包括：\n"
+                "1. 代码的主要功能\n"
+                "2. 关键实现细节\n"
+                "3. 使用示例"
+            ),
             description="代码解释",
             variables=["code"],
             category="general"

@@ -4,13 +4,13 @@
 批量更新、历史回溯等功能。
 """
 
+import copy
 import json
 import os
 import time
-import copy
-from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Any
+from dataclasses import asdict, dataclass, field
 from enum import Enum
+from typing import Any, Dict, List
 
 from common.config import config
 from common.io_utils import error, warning

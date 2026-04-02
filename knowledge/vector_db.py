@@ -1,8 +1,13 @@
-"""向量数据库模块."""
+"""向量数据库模块.
 
-import json
+基于 Qwen Embedding 的向量数据库实现，提供知识的存储、检索和相似度搜索功能。
+使用余弦相似度算法计算向量距离，支持元数据和标签管理。
+"""
+
 import hashlib
+import json
 import math
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -12,7 +17,16 @@ from llm.llm import call_qwen_embedding
 
 @dataclass
 class KnowledgeEntry:
-    """知识条目."""
+    """知识条目数据类.
+
+    Attributes:
+        id: 唯一标识符
+        content: 知识内容文本
+        metadata: 元数据字典
+        tags: 标签列表
+        timestamp: 时间戳
+    """
+
     id: str
     content: str
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -21,7 +35,10 @@ class KnowledgeEntry:
 
 
 class VectorDatabase:
-    """基于 Qwen Embedding 的向量数据库."""
+    """基于 Qwen Embedding 的向量数据库.
+
+    提供知识的添加、搜索、删除和列表功能，支持相似度检索。
+    """
 
     def __init__(self, storage_dir: str = "vectordb"):
         """初始化向量数据库.
@@ -39,6 +56,15 @@ class VectorDatabase:
 
     @staticmethod
     def _cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
+        """计算两个向量的余弦相似度.
+
+        Args:
+            vec1: 第一个向量
+            vec2: 第二个向量
+
+        Returns:
+            相似度分数，范围 [-1, 1]
+        """
         if not vec1 or not vec2:
             return 0.0
         if len(vec1) != len(vec2):
@@ -59,11 +85,23 @@ class VectorDatabase:
 
     @staticmethod
     def _generate_id(content: str) -> str:
+        """根据内容生成哈希ID.
+
+        Args:
+            content: 内容文本
+
+        Returns:
+            16位哈希ID
+        """
         return hashlib.md5(content.encode("utf-8")).hexdigest()[:16]
 
-    def add(self, content: str, metadata: Optional[Dict[str, Any]] = None,
-            tags: Optional[List[str]] = None,
-            entry_id: Optional[str] = None) -> str:
+    def add(
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        tags: Optional[List[str]] = None,
+        entry_id: Optional[str] = None
+    ) -> str:
         """添加知识条目.
 
         Args:
@@ -75,7 +113,6 @@ class VectorDatabase:
         Returns:
             知识条目 ID
         """
-        import time
         entry_id = entry_id or VectorDatabase._generate_id(content)
 
         if entry_id in self.entries:
@@ -99,8 +136,12 @@ class VectorDatabase:
 
         return entry_id
 
-    def search(self, query: str, top_k: int = 5,
-               tags: Optional[List[str]] = None) -> List[Tuple[KnowledgeEntry, float]]:
+    def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        tags: Optional[List[str]] = None
+    ) -> List[Tuple[KnowledgeEntry, float]]:
         """搜索相关知识条目.
 
         Args:
@@ -171,7 +212,7 @@ class VectorDatabase:
         """
         return list(self.entries.values())
 
-    def _save(self):
+    def _save(self) -> None:
         """保存数据到文件."""
         data = {
             "entries": [
@@ -190,7 +231,7 @@ class VectorDatabase:
         with open(self.storage_dir / "data.json", "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-    def _load(self):
+    def _load(self) -> None:
         """从文件加载数据."""
         data_file = self.storage_dir / "data.json"
         if not data_file.exists():
