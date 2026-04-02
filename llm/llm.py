@@ -10,7 +10,8 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from typing import List, Dict
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
 from common.config import config
 from common.io_utils import safe_text
@@ -21,6 +22,16 @@ try:
     KV_CACHE_AVAILABLE = True
 except ImportError:
     KV_CACHE_AVAILABLE = False
+
+
+@dataclass
+class LLMResponse:
+    content: str
+    finish_reason: Optional[str] = None
+    usage: Optional[Dict[str, Any]] = None
+    saw_done: bool = False
+    stream_completed: bool = False
+    error: Optional[str] = None
 
 
 def _split_stream_text(text: str) -> tuple[str, str]:
@@ -102,8 +113,9 @@ def call_qwen(
     api_key: str | None = None,
     base_url: str = None,
     stream: bool = False,
-    use_cache: bool = True
-) -> str:
+    use_cache: bool = True,
+    return_metadata: bool = False
+) -> str | LLMResponse:
     """调用通义千问（Qwen）模型的函数.
 
     使用标准库 urllib 直接发送 HTTP 请求。
@@ -125,6 +137,12 @@ def call_qwen(
         cached_response = kv_cache.get(query_text)
         if cached_response:
             print("[LLM] Cache Hit! Using Semantic KV-Cache result.")
+            if return_metadata:
+                return LLMResponse(
+                    content=cached_response,
+                    finish_reason="cache",
+                    stream_completed=True,
+                )
             return cached_response
 
     model = model or config.llm.model
@@ -136,6 +154,12 @@ def call_qwen(
             "[LLM Error] Missing API Key. Please set DASHSCOPE_API_KEY.",
             file=sys.stderr
         )
+        if return_metadata:
+            return LLMResponse(
+                content="",
+                stream_completed=False,
+                error="Missing API Key",
+            )
         return ""
 
     headers = {
@@ -148,6 +172,8 @@ def call_qwen(
         "messages": messages,
         "stream": stream
     }
+    if config.llm.max_tokens is not None:
+        payload["max_tokens"] = config.llm.max_tokens
 
     start_time = time.time()
 
@@ -161,6 +187,9 @@ def call_qwen(
             with urllib.request.urlopen(req) as response:
                 if stream:
                     answer_parts = []
+                    finish_reason = None
+                    usage = None
+                    saw_done = False
                     stream_state: dict[str, bool | str] = {
                         "in_think": False,
                         "think_header_printed": False,
@@ -172,10 +201,22 @@ def call_qwen(
                         if line.startswith("data: "):
                             data_str = line[6:]
                             if data_str == "[DONE]":
+                                saw_done = True
                                 break
                             try:
                                 data_json = json.loads(data_str)
-                                chunk = data_json["choices"][0]["delta"].get("content", "")
+                                usage_candidate = data_json.get("usage")
+                                if isinstance(usage_candidate, dict):
+                                    usage = usage_candidate
+                                choices = data_json.get("choices") or []
+                                if not choices:
+                                    continue
+                                choice = choices[0]
+                                finish_reason_candidate = choice.get("finish_reason")
+                                if isinstance(finish_reason_candidate, str):
+                                    finish_reason = finish_reason_candidate
+                                delta = choice.get("delta") or {}
+                                chunk = delta.get("content", "")
                                 if chunk:
                                     merged = str(stream_state["pending"]) + chunk
                                     piece, pending = _split_stream_text(merged)
@@ -205,10 +246,19 @@ def call_qwen(
                         query_text = json.dumps(messages, ensure_ascii=False)
                         kv_cache.set(query_text, content)
 
+                    if return_metadata:
+                        return LLMResponse(
+                            content=content,
+                            finish_reason=finish_reason,
+                            usage=usage,
+                            saw_done=saw_done,
+                            stream_completed=saw_done or finish_reason is not None,
+                        )
                     return content
                 else:
                     result = json.loads(response.read().decode("utf-8"))
-                    content = result["choices"][0]["message"]["content"]
+                    choice = result["choices"][0]
+                    content = choice["message"]["content"]
 
                     duration = time.time() - start_time
                     print(f"[Metrics] Latency: {duration:.2f}s | Approx Tokens: {len(content)//4}")
@@ -217,6 +267,14 @@ def call_qwen(
                         query_text = json.dumps(messages, ensure_ascii=False)
                         kv_cache.set(query_text, content)
 
+                    if return_metadata:
+                        return LLMResponse(
+                            content=content,
+                            finish_reason=choice.get("finish_reason"),
+                            usage=result.get("usage"),
+                            saw_done=True,
+                            stream_completed=True,
+                        )
                     return content
         except urllib.error.HTTPError as e:
             if e.code in (400, 401, 403):
@@ -224,6 +282,12 @@ def call_qwen(
                     f"[LLM Error] Authentication/Client error {e.code}: {e}",
                     file=sys.stderr
                 )
+                if return_metadata:
+                    return LLMResponse(
+                        content="",
+                        stream_completed=False,
+                        error=str(e),
+                    )
                 return ""
             if attempt == config.llm.max_retries - 1:
                 print(
@@ -231,6 +295,12 @@ def call_qwen(
                     f"attempts: {e}",
                     file=sys.stderr
                 )
+                if return_metadata:
+                    return LLMResponse(
+                        content="",
+                        stream_completed=False,
+                        error=str(e),
+                    )
                 return ""
 
             wait_time = 2 ** attempt
@@ -242,14 +312,28 @@ def call_qwen(
                     f"attempts: {e}",
                     file=sys.stderr
                 )
+                if return_metadata:
+                    return LLMResponse(
+                        content="",
+                        stream_completed=False,
+                        error=str(e),
+                    )
                 return ""
 
             wait_time = 2 ** attempt
             time.sleep(wait_time)
         except Exception as e:
             print(f"[LLM Error] Unexpected error: {e}", file=sys.stderr)
+            if return_metadata:
+                return LLMResponse(
+                    content="",
+                    stream_completed=False,
+                    error=str(e),
+                )
             return ""
 
+    if return_metadata:
+        return LLMResponse(content="", stream_completed=False, error="Unknown error")
     return ""
 
 

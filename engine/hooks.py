@@ -206,6 +206,11 @@ class HookRegistry:
 
 registry = HookRegistry.get_instance()
 
+LLM_FINISH_REASON_METADATA_KEY = "llm_finish_reason"
+CONTINUATION_REQUIRED_METADATA_KEY = "continuation_required"
+CONTINUATION_PROMPT_METADATA_KEY = "continuation_prompt"
+HOOK_FILE_SNAPSHOT_METADATA_KEY = "hook_file_snapshot"
+
 
 class HookChain:
     """执行钩子链."""
@@ -244,6 +249,37 @@ class HookChain:
                 traceback.print_exc()
                 if hook_type == HookType.ON_ERROR:
                     error("ON_ERROR hook 执行失败，继续传播原始错误")
+
+
+class RollbackStatus(Enum):
+    """回滚状态枚举.
+
+    Attributes:
+        MISSING_SNAPSHOT: 缺少快照
+        SKIPPED_SIGNATURE_MISMATCH: 签名不匹配跳过
+        RESTORED: 已恢复
+        DELETED_NEW_FILE: 已删除新建文件
+        FAILED: 失败
+    """
+
+    MISSING_SNAPSHOT = "missing_snapshot"
+    SKIPPED_SIGNATURE_MISMATCH = "skipped_signature_mismatch"
+    RESTORED = "restored"
+    DELETED_NEW_FILE = "deleted_new_file"
+    FAILED = "failed"
+
+
+@dataclass
+class RollbackResult:
+    """回滚结果数据类.
+
+    Attributes:
+        status: 回滚状态
+        message: 结果消息
+    """
+
+    status: RollbackStatus
+    message: Optional[str] = None
 
 
 def _session_get(session: Any, key: str, default: Any = None) -> Any:
@@ -476,6 +512,25 @@ def _pop_file_snapshot(
     return snapshot
 
 
+def _consume_file_snapshot(
+    context: HookContext,
+    safe_path: str
+) -> Optional[Dict[str, Any]]:
+    """消费文件快照并存储到上下文元数据.
+
+    Args:
+        context: 钩子上下文
+        safe_path: 安全路径
+
+    Returns:
+        快照数据或 None
+    """
+    snapshot = _pop_file_snapshot(context.session, safe_path)
+    if snapshot is not None:
+        context.metadata[HOOK_FILE_SNAPSHOT_METADATA_KEY] = snapshot
+    return snapshot
+
+
 def builtin_lint_snapshot_hook(context: HookContext) -> None:
     """内置语法检查快照钩子.
 
@@ -570,7 +625,7 @@ def _rollback_file_snapshot(
     safe_path: str,
     snapshot: Optional[Dict[str, Any]],
     expected_signature: Optional[tuple[int, int]] = None
-) -> Optional[str]:
+) -> RollbackResult:
     """回滚文件快照.
 
     Args:
@@ -580,25 +635,47 @@ def _rollback_file_snapshot(
         expected_signature: 回滚前预期的当前文件签名
 
     Returns:
-        回滚结果消息
+        回滚结果
     """
     if not snapshot:
-        return None
+        return RollbackResult(status=RollbackStatus.MISSING_SNAPSHOT)
     try:
         if expected_signature is not None:
             current_signature = _get_file_signature(safe_path)
             if current_signature != expected_signature:
-                return "检测到文件在回滚前已被其他进程修改，已跳过自动回滚。"
+                return RollbackResult(
+                    status=RollbackStatus.SKIPPED_SIGNATURE_MISMATCH,
+                    message="检测到文件在回滚前已被其他进程修改，已跳过自动回滚。",
+                )
         if snapshot.get("exists_before"):
             _write_file_with_lock(safe_path, snapshot.get("content_before") or "")
-            return "已自动回滚到写入前内容。"
+            return RollbackResult(
+                status=RollbackStatus.RESTORED,
+                message="已自动回滚到写入前内容。",
+            )
         try:
             os.remove(safe_path)
         except FileNotFoundError:
             pass
-        return "已删除本次新建的无效文件。"
+        return RollbackResult(
+            status=RollbackStatus.DELETED_NEW_FILE,
+            message="已删除本次新建的无效文件。",
+        )
+    except PermissionError as exc:
+        return RollbackResult(
+            status=RollbackStatus.FAILED,
+            message=f"自动回滚失败（权限不足）: {exc}",
+        )
+    except OSError as exc:
+        return RollbackResult(
+            status=RollbackStatus.FAILED,
+            message=f"自动回滚失败（系统错误）: {exc}",
+        )
     except Exception as exc:
-        return f"自动回滚失败: {exc}"
+        return RollbackResult(
+            status=RollbackStatus.FAILED,
+            message=f"自动回滚失败: {exc}",
+        )
 
 
 def _read_current_file_state(
@@ -638,7 +715,7 @@ def _read_current_file_state(
 def _build_lint_feedback(
     target_path: str,
     lint_error: str,
-    rollback_message: Optional[str],
+    rollback_result: RollbackResult,
     safe_path: str,
     snapshot: Optional[Dict[str, Any]]
 ) -> str:
@@ -654,11 +731,18 @@ def _build_lint_feedback(
     Returns:
         反馈信息
     """
+    if rollback_result.status in {
+        RollbackStatus.RESTORED,
+        RollbackStatus.DELETED_NEW_FILE,
+    }:
+        state_snapshot = snapshot
+    else:
+        state_snapshot = None
     parts = [
         f"{target_path} 未通过语法校验。",
         lint_error,
-        rollback_message or "未执行自动回滚。",
-        _read_current_file_state(safe_path, snapshot),
+        rollback_result.message or "未执行自动回滚。",
+        _read_current_file_state(safe_path, state_snapshot),
         "请基于当前文件状态重新提交正确的 write 或 edit 指令。"
     ]
     return "\n".join(part for part in parts if part)
@@ -683,23 +767,23 @@ def builtin_lint_check_hook(context: HookContext) -> None:
         context.tool_result.startswith("Successfully wrote to ")
         or context.tool_result.startswith("Successfully edited ")
     ):
-        _pop_file_snapshot(context.session, safe_path)
+        _consume_file_snapshot(context, safe_path)
         return
     tool_args = _extract_tool_args(context)
     target_path = _extract_tool_path(context.tool_name, tool_args)
     if not target_path:
-        _pop_file_snapshot(context.session, safe_path)
+        _consume_file_snapshot(context, safe_path)
         return
     try:
         content, current_signature = _read_file_with_lock_and_signature(safe_path)
     except Exception:
-        _pop_file_snapshot(context.session, safe_path)
+        _consume_file_snapshot(context, safe_path)
         return
-    snapshot = _pop_file_snapshot(context.session, safe_path)
+    snapshot = _consume_file_snapshot(context, safe_path)
     lint_error = _lint_file_content(target_path, content)
     if not lint_error:
         return
-    rollback_message = _rollback_file_snapshot(
+    rollback_result = _rollback_file_snapshot(
         context.session,
         safe_path,
         snapshot,
@@ -708,17 +792,40 @@ def builtin_lint_check_hook(context: HookContext) -> None:
     feedback = _build_lint_feedback(
         target_path,
         lint_error,
-        rollback_message,
+        rollback_result,
         safe_path,
         snapshot,
     )
     context.tool_result = (
         f"{context.tool_result}\n"
         f"[LINT] {lint_error}\n"
-        f"{rollback_message or '未执行自动回滚。'}\n"
+        f"{rollback_result.message or '未执行自动回滚。'}\n"
         "请修复该文件后重新执行相关写入。"
     )
     context.set_feedback(feedback)
+
+
+def builtin_llm_continuation_hook(context: HookContext) -> None:
+    """内置 LLM 续写钩子.
+
+    当 LLM 输出因 token 限制被截断时，设置续写提示。
+
+    Args:
+        context: 钩子上下文
+    """
+    finish_reason = context.metadata.get(LLM_FINISH_REASON_METADATA_KEY)
+    if finish_reason != "length":
+        return
+    if not isinstance(context.llm_output, str):
+        return
+    if not context.llm_output.strip():
+        return
+    context.metadata[CONTINUATION_REQUIRED_METADATA_KEY] = True
+    context.metadata[CONTINUATION_PROMPT_METADATA_KEY] = (
+        "你上一轮的输出因 token 限制被截断。"
+        "请从刚才中断的位置继续，仅输出剩余内容，不要重复已输出部分；"
+        "如果任务已经完成，请直接回复 DONE。"
+    )
 
 
 def _is_registered(
@@ -742,6 +849,8 @@ def _is_registered(
 
 def register_builtin_hooks() -> None:
     """注册内置钩子."""
+    if not _is_registered(HookType.POST_LLM, builtin_llm_continuation_hook):
+        registry.register(HookType.POST_LLM, builtin_llm_continuation_hook, priority=100)
     if not _is_registered(HookType.PRE_TOOL, builtin_security_filter_hook):
         registry.register(HookType.PRE_TOOL, builtin_security_filter_hook, priority=100)
     if not _is_registered(HookType.PRE_TOOL, builtin_lint_snapshot_hook):

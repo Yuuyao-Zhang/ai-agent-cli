@@ -22,19 +22,34 @@ from common.constant import (
     UNCERTAINTY_KEYWORDS,
 )
 from llm.context import assembler
-from llm.llm import call_qwen
+from llm.llm import LLMResponse, call_qwen
 from llm.parser import parse_commands
 from common.security import security_manager
 from common.io_utils import info, debug, error, output, Colors
 from llm.terminal import log_output
 from engine.tools import execute_instruction
-from engine.hooks import HookChain, HookContext, HookType, register_builtin_hooks
+from engine.hooks import (
+    CONTINUATION_PROMPT_METADATA_KEY,
+    CONTINUATION_REQUIRED_METADATA_KEY,
+    LLM_FINISH_REASON_METADATA_KEY,
+    HookChain,
+    HookContext,
+    HookType,
+    register_builtin_hooks,
+)
 
 from state.session import Session
 from state.manager import task_manager
 from state.task import TaskStatus
 from state.checkpoint import checkpoint_manager
 from memory import create_memory_manager
+
+CONTINUATION_STATE_KEY = "_llm_continuation_state"
+DEFAULT_CONTINUATION_PROMPT = (
+    "你上一轮的输出因 token 限制被截断。"
+    "请从刚才中断的位置继续，仅输出剩余内容，不要重复已输出部分；"
+    "如果任务已经完成，请直接回复 DONE。"
+)
 
 
 def append_knowledge_references(response: str, session: Session) -> str:
@@ -193,6 +208,47 @@ def _contains_end_keyword(response: str) -> bool:
     return any(keyword in normalized for keyword in END_KEYWORDS)
 
 
+def _append_continuation_fragment(session: Session, response: str) -> None:
+    """追加续写片段到会话状态.
+
+    Args:
+        session: 会话对象
+        response: 响应片段
+    """
+    state = session.get(CONTINUATION_STATE_KEY, {})
+    if not isinstance(state, dict):
+        state = {}
+    fragments = state.get("fragments")
+    if not isinstance(fragments, list):
+        fragments = []
+    fragments.append(response)
+    state["fragments"] = fragments
+    session.set(CONTINUATION_STATE_KEY, state)
+
+
+def _consume_continuation_response(session: Session, response: str) -> str:
+    """消费续写响应并合并所有片段.
+
+    Args:
+        session: 会话对象
+        response: 当前响应
+
+    Returns:
+        合并后的完整响应
+    """
+    state = session.get(CONTINUATION_STATE_KEY, {})
+    if not isinstance(state, dict):
+        return response
+    fragments = state.get("fragments")
+    if not isinstance(fragments, list) or not fragments:
+        return response
+    combined = "".join(
+        fragment for fragment in fragments if isinstance(fragment, str)
+    ) + response
+    session.set(CONTINUATION_STATE_KEY, {})
+    return combined
+
+
 def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> str:
     """执行 Agent 任务循环.
 
@@ -289,7 +345,24 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
             if hook_ctx.llm_input is not None:
                 final_messages = hook_ctx.llm_input
 
-            response = call_qwen(final_messages, stream=True)
+            llm_result = call_qwen(
+                final_messages,
+                stream=True,
+                return_metadata=True,
+            )
+            llm_metadata = {}
+            if isinstance(llm_result, LLMResponse):
+                response = llm_result.content
+                llm_metadata = {
+                    LLM_FINISH_REASON_METADATA_KEY: llm_result.finish_reason,
+                    "llm_stream_completed": llm_result.stream_completed,
+                    "llm_saw_done": llm_result.saw_done,
+                    "llm_usage": llm_result.usage,
+                }
+                if llm_result.error:
+                    llm_metadata["llm_error"] = llm_result.error
+            else:
+                response = llm_result
             
             # Hook: POST_LLM
             hook_ctx = HookContext(
@@ -297,7 +370,8 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
                 task_desc=task_desc,
                 session=session,
                 llm_input=final_messages,
-                llm_output=response
+                llm_output=response,
+                metadata=llm_metadata,
             )
             hooks.execute(HookType.POST_LLM, hook_ctx)
             if hook_ctx.llm_output is not None:
@@ -324,16 +398,29 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
                 )
                 continue
 
-            output(f"[{session.depth}] AI: {response[:100]}...", color=Colors.DIM)
+            if hook_ctx.metadata.get(CONTINUATION_REQUIRED_METADATA_KEY):
+                _append_continuation_fragment(session, response)
+                memory_manager.add_message("assistant", response)
+                continuation_prompt = hook_ctx.metadata.get(
+                    CONTINUATION_PROMPT_METADATA_KEY
+                )
+                if not isinstance(continuation_prompt, str):
+                    continuation_prompt = DEFAULT_CONTINUATION_PROMPT
+                memory_manager.add_message("user", continuation_prompt)
+                continue
+
+            full_response = _consume_continuation_response(session, response)
+
+            output(f"[{session.depth}] AI: {full_response[:100]}...", color=Colors.DIM)
             # v5: 使用 memory_manager 添加消息
             memory_manager.add_message("assistant", response)
 
-            instructions = parse_commands(response)
+            instructions = parse_commands(full_response)
 
             if not instructions:
-                if _contains_end_keyword(response):
+                if _contains_end_keyword(full_response):
                     current_task.complete()
-                    final_response = append_knowledge_references(response, session)
+                    final_response = append_knowledge_references(full_response, session)
                     final_response = append_skill_references(final_response, session)
                     final_response = append_memory_references(final_response, session)
                     
@@ -348,11 +435,11 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
                     final_response = hook_ctx.metadata.get("result", final_response)
                     return final_response
 
-                if len(response.strip()) > MIN_RESPONSE_LENGTH and not any(
-                    marker in response for marker in INCOMPLETE_MARKERS
+                if len(full_response.strip()) > MIN_RESPONSE_LENGTH and not any(
+                    marker in full_response for marker in INCOMPLETE_MARKERS
                 ):
                     current_task.complete()
-                    final_response = append_knowledge_references(response, session)
+                    final_response = append_knowledge_references(full_response, session)
                     final_response = append_skill_references(final_response, session)
                     final_response = append_memory_references(final_response, session)
                     
@@ -377,7 +464,7 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
             results = []
             user_cancelled = False
             uncertainty_detected = any(
-                k in response.lower() for k in UNCERTAINTY_KEYWORDS
+                k in full_response.lower() for k in UNCERTAINTY_KEYWORDS
             )
 
             for inst_type, inst_args in instructions:
@@ -440,7 +527,11 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
                     tool_result=str(output_res)
                 )
                 hooks.execute(HookType.POST_TOOL, hook_ctx)
-                output_res = hook_ctx.tool_result if hook_ctx.tool_result is not None else str(output_res)
+                output_res = (
+                    hook_ctx.tool_result
+                    if hook_ctx.tool_result is not None
+                    else str(output_res)
+                )
                 output_res = _merge_tool_feedback(output_res, hook_ctx)
                 if inst_type == 'subtask':
                     results.append(f"子任务结果:\n{output_res}")
