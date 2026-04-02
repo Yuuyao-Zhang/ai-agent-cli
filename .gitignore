@@ -153,6 +153,7 @@ mcp/mcp_data/
 
 # Test file
 test/
+tests/
 demo/
 manual_tests/
 memory_*

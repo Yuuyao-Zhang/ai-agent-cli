@@ -6,13 +6,21 @@
 import ast
 import json
 import os
+import threading
 import traceback
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Callable, Dict, List, Optional
 
+from common.config import YAML_AVAILABLE
+from common.file_lock import FileLock
 from common.io_utils import debug, error
 from engine.tools import validate_path
+
+if YAML_AVAILABLE:
+    import yaml
+else:
+    yaml = None
 
 
 class HookType(Enum):
@@ -35,6 +43,7 @@ class HookType(Enum):
     PRE_TOOL = auto()
     POST_TOOL = auto()
     ON_ERROR = auto()
+
 
 @dataclass
 class HookContext:
@@ -145,22 +154,23 @@ class HookRegistry:
     """管理全局和局部钩子的注册中心."""
 
     _instance = None
+    _instance_lock = threading.Lock()
 
     def __new__(cls):
         """单例模式实现."""
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance.hooks: Dict[HookType, List[HookEntry]] = {
-                t: [] for t in HookType
-            }
+            with cls._instance_lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance.hooks: Dict[HookType, List[HookEntry]] = {
+                        t: [] for t in HookType
+                    }
         return cls._instance
 
     @classmethod
     def get_instance(cls):
         """获取单例实例."""
-        if cls._instance is None:
-            cls._instance = cls()
-        return cls._instance
+        return cls()
 
     def register(
         self,
@@ -187,7 +197,14 @@ class HookRegistry:
 
     def clear(self) -> None:
         """清空所有钩子."""
+        self.reset()
+
+    def reset(self) -> None:
+        """重置所有钩子."""
         self.hooks = {t: [] for t in HookType}
+
+
+registry = HookRegistry.get_instance()
 
 
 class HookChain:
@@ -214,15 +231,123 @@ class HookChain:
             if context.is_propagation_stopped:
                 break
 
+            original_error = context.error
             try:
                 if entry.condition and not entry.condition(context):
                     continue
 
                 entry.callback(context)
             except Exception as e:
+                if hook_type == HookType.ON_ERROR and original_error is not None:
+                    context.metadata.setdefault("original_error", repr(original_error))
                 error(f"Error in hook {entry.callback.__name__}: {e}")
-                if hook_type != HookType.ON_ERROR:
-                    traceback.print_exc()
+                traceback.print_exc()
+                if hook_type == HookType.ON_ERROR:
+                    error("ON_ERROR hook 执行失败，继续传播原始错误")
+
+
+def _session_get(session: Any, key: str, default: Any = None) -> Any:
+    """从会话中安全获取值.
+
+    Args:
+        session: 会话对象
+        key: 键名
+        default: 默认值
+
+    Returns:
+        获取到的值或默认值
+    """
+    if session is None:
+        return default
+    getter = getattr(session, "get", None)
+    if not callable(getter):
+        return default
+    try:
+        return getter(key, default)
+    except TypeError:
+        return default
+
+
+def _session_set(session: Any, key: str, value: Any) -> bool:
+    """安全设置会话中的值.
+
+    Args:
+        session: 会话对象
+        key: 键名
+        value: 值
+
+    Returns:
+        是否设置成功
+    """
+    if session is None:
+        return False
+    setter = getattr(session, "set", None)
+    if not callable(setter):
+        return False
+    try:
+        setter(key, value)
+        return True
+    except TypeError:
+        return False
+
+
+def _read_file_with_lock(path: str) -> str:
+    """带锁读取文件内容.
+
+    Args:
+        path: 文件路径
+
+    Returns:
+        文件内容
+    """
+    with open(path, "r", encoding="utf-8") as handle:
+        with FileLock(handle, exclusive=False):
+            return handle.read()
+
+
+def _write_file_with_lock(path: str, content: str) -> None:
+    """带锁写入文件内容.
+
+    Args:
+        path: 文件路径
+        content: 文件内容
+    """
+    with open(path, "w", encoding="utf-8") as handle:
+        with FileLock(handle, exclusive=True):
+            handle.write(content)
+
+
+def _get_file_signature(path: str) -> Optional[tuple[int, int]]:
+    """获取文件签名.
+
+    Args:
+        path: 文件路径
+
+    Returns:
+        由修改时间和大小组成的签名，不存在则返回 None
+    """
+    try:
+        stat_result = os.stat(path)
+    except FileNotFoundError:
+        return None
+    return (stat_result.st_mtime_ns, stat_result.st_size)
+
+
+def _read_file_with_lock_and_signature(path: str) -> tuple[str, Optional[tuple[int, int]]]:
+    """带锁读取文件内容和签名.
+
+    Args:
+        path: 文件路径
+
+    Returns:
+        文件内容和签名
+    """
+    with open(path, "r", encoding="utf-8") as handle:
+        with FileLock(handle, exclusive=False):
+            content = handle.read()
+            stat_result = os.fstat(handle.fileno())
+            signature = (stat_result.st_mtime_ns, stat_result.st_size)
+            return content, signature
 
 
 def _extract_tool_args(context: HookContext) -> Any:
@@ -255,11 +380,13 @@ def _extract_tool_path(
     if tool_name == "read" and isinstance(tool_args, str):
         return tool_args
     if tool_name == "write" and isinstance(tool_args, dict):
-        return tool_args.get("path") if isinstance(tool_args.get("path"), str) else None
+        path = tool_args.get("path")
+        return path if isinstance(path, str) else None
     if tool_name == "write" and isinstance(tool_args, (tuple, list)) and tool_args:
         return tool_args[0] if isinstance(tool_args[0], str) else None
     if tool_name == "edit" and isinstance(tool_args, dict):
-        return tool_args.get("path") if isinstance(tool_args.get("path"), str) else None
+        path = tool_args.get("path")
+        return path if isinstance(path, str) else None
     if tool_name == "edit" and isinstance(tool_args, (tuple, list)) and tool_args:
         return tool_args[0] if isinstance(tool_args[0], str) else None
     return None
@@ -277,19 +404,133 @@ def builtin_security_filter_hook(context: HookContext) -> None:
     target_path = _extract_tool_path(context.tool_name, tool_args)
     if not target_path:
         return
-    cwd = "."
-    if context.session is not None:
-        cwd = context.session.get("cwd", ".")
+    cwd = _session_get(context.session, "cwd", ".")
     try:
         validate_path(target_path, cwd)
-    except ValueError:
+    except (OSError, PermissionError, ValueError) as exc:
         context.reject(
             "文件路径越界",
             (
                 f"{context.tool_name} 只能访问当前工作目录内的文件。"
                 "请改用工作目录内的相对路径，不要使用 .. 或工作区外绝对路径。"
+                f"\n校验失败原因: {exc}"
             ),
         )
+
+
+def _get_snapshot_store(session: Any) -> Dict[str, Dict[str, Any]]:
+    """获取会话中的快照存储.
+
+    Args:
+        session: 会话对象
+
+    Returns:
+        快照存储字典
+    """
+    if session is None:
+        return {}
+    snapshots = _session_get(session, "_hook_file_snapshots", {})
+    if not isinstance(snapshots, dict):
+        snapshots = {}
+        _session_set(session, "_hook_file_snapshots", snapshots)
+    return snapshots
+
+
+def _save_file_snapshot(
+    session: Any,
+    safe_path: str,
+    snapshot: Dict[str, Any]
+) -> None:
+    """保存文件快照到会话.
+
+    Args:
+        session: 会话对象
+        safe_path: 安全路径
+        snapshot: 快照数据
+    """
+    if session is None:
+        return
+    snapshots = _get_snapshot_store(session)
+    snapshots[safe_path] = snapshot
+    _session_set(session, "_hook_file_snapshots", snapshots)
+
+
+def _pop_file_snapshot(
+    session: Any,
+    safe_path: str
+) -> Optional[Dict[str, Any]]:
+    """从会话中弹出文件快照.
+
+    Args:
+        session: 会话对象
+        safe_path: 安全路径
+
+    Returns:
+        快照数据或 None
+    """
+    if session is None:
+        return None
+    snapshots = _get_snapshot_store(session)
+    snapshot = snapshots.pop(safe_path, None)
+    _session_set(session, "_hook_file_snapshots", snapshots)
+    return snapshot
+
+
+def builtin_lint_snapshot_hook(context: HookContext) -> None:
+    """内置语法检查快照钩子.
+
+    在文件写入或编辑前保存文件快照。
+
+    Args:
+        context: 钩子上下文
+    """
+    if context.tool_name not in {"write", "edit"}:
+        return
+    tool_args = _extract_tool_args(context)
+    target_path = _extract_tool_path(context.tool_name, tool_args)
+    if not target_path:
+        return
+    cwd = _session_get(context.session, "cwd", ".")
+    try:
+        safe_path = validate_path(target_path, cwd)
+    except (OSError, PermissionError, ValueError):
+        return
+    exists_before = os.path.exists(safe_path)
+    content_before = None
+    if exists_before:
+        try:
+            content_before = _read_file_with_lock(safe_path)
+        except Exception:
+            return
+    _save_file_snapshot(
+        context.session,
+        safe_path,
+        {
+            "display_path": target_path,
+            "exists_before": exists_before,
+            "content_before": content_before,
+        },
+    )
+
+
+def _resolve_safe_tool_path(context: HookContext) -> Optional[str]:
+    """解析工具的安全路径.
+
+    Args:
+        context: 钩子上下文
+
+    Returns:
+        安全路径或 None
+    """
+    tool_args = _extract_tool_args(context)
+    target_path = _extract_tool_path(context.tool_name, tool_args)
+    if not target_path:
+        return None
+    cwd = _session_get(context.session, "cwd", ".")
+    try:
+        return validate_path(target_path, cwd)
+    except (OSError, PermissionError, ValueError):
+        return None
 
 
 def _lint_file_content(path: str, content: str) -> Optional[str]:
@@ -316,7 +557,111 @@ def _lint_file_content(path: str, content: str) -> Optional[str]:
             json.loads(content)
         except json.JSONDecodeError as exc:
             return f"JSON 语法错误: {exc.msg} (line {exc.lineno}, column {exc.colno})"
+    elif suffix in {".yaml", ".yml"} and YAML_AVAILABLE and yaml is not None:
+        try:
+            yaml.safe_load(content)
+        except yaml.YAMLError as exc:
+            return f"YAML 语法错误: {str(exc).strip()}"
     return None
+
+
+def _rollback_file_snapshot(
+    session: Any,
+    safe_path: str,
+    snapshot: Optional[Dict[str, Any]],
+    expected_signature: Optional[tuple[int, int]] = None
+) -> Optional[str]:
+    """回滚文件快照.
+
+    Args:
+        session: 会话对象
+        safe_path: 安全路径
+        snapshot: 快照数据
+        expected_signature: 回滚前预期的当前文件签名
+
+    Returns:
+        回滚结果消息
+    """
+    if not snapshot:
+        return None
+    try:
+        if expected_signature is not None:
+            current_signature = _get_file_signature(safe_path)
+            if current_signature != expected_signature:
+                return "检测到文件在回滚前已被其他进程修改，已跳过自动回滚。"
+        if snapshot.get("exists_before"):
+            _write_file_with_lock(safe_path, snapshot.get("content_before") or "")
+            return "已自动回滚到写入前内容。"
+        try:
+            os.remove(safe_path)
+        except FileNotFoundError:
+            pass
+        return "已删除本次新建的无效文件。"
+    except Exception as exc:
+        return f"自动回滚失败: {exc}"
+
+
+def _read_current_file_state(
+    safe_path: str,
+    snapshot: Optional[Dict[str, Any]]
+) -> str:
+    """读取当前文件状态.
+
+    Args:
+        safe_path: 安全路径
+        snapshot: 快照数据
+
+    Returns:
+        文件状态描述
+    """
+    if snapshot is not None:
+        if snapshot.get("exists_before"):
+            content = snapshot.get("content_before") or ""
+            return (
+                "当前文件已恢复到写前内容。\n"
+                "当前文件内容:\n"
+                f"{content[:2000]}"
+            )
+        return "当前文件不存在，请重新生成完整文件内容。"
+    if not os.path.exists(safe_path):
+        return "当前文件不存在，请重新生成完整文件内容。"
+    try:
+        content = _read_file_with_lock(safe_path)
+        return (
+            "当前文件内容:\n"
+            f"{content[:2000]}"
+        )
+    except Exception as exc:
+        return f"无法读取当前文件状态: {exc}"
+
+
+def _build_lint_feedback(
+    target_path: str,
+    lint_error: str,
+    rollback_message: Optional[str],
+    safe_path: str,
+    snapshot: Optional[Dict[str, Any]]
+) -> str:
+    """构建语法检查反馈信息.
+
+    Args:
+        target_path: 目标路径
+        lint_error: 语法错误信息
+        rollback_message: 回滚消息
+        safe_path: 安全路径
+        snapshot: 快照数据
+
+    Returns:
+        反馈信息
+    """
+    parts = [
+        f"{target_path} 未通过语法校验。",
+        lint_error,
+        rollback_message or "未执行自动回滚。",
+        _read_current_file_state(safe_path, snapshot),
+        "请基于当前文件状态重新提交正确的 write 或 edit 指令。"
+    ]
+    return "\n".join(part for part in parts if part)
 
 
 def builtin_lint_check_hook(context: HookContext) -> None:
@@ -331,37 +676,49 @@ def builtin_lint_check_hook(context: HookContext) -> None:
         return
     if not isinstance(context.tool_result, str):
         return
+    safe_path = _resolve_safe_tool_path(context)
+    if not safe_path:
+        return
     if not (
         context.tool_result.startswith("Successfully wrote to ")
         or context.tool_result.startswith("Successfully edited ")
     ):
+        _pop_file_snapshot(context.session, safe_path)
         return
     tool_args = _extract_tool_args(context)
     target_path = _extract_tool_path(context.tool_name, tool_args)
     if not target_path:
+        _pop_file_snapshot(context.session, safe_path)
         return
-    cwd = "."
-    if context.session is not None:
-        cwd = context.session.get("cwd", ".")
     try:
-        safe_path = validate_path(target_path, cwd)
-        with open(safe_path, "r", encoding="utf-8") as handle:
-            content = handle.read()
+        content, current_signature = _read_file_with_lock_and_signature(safe_path)
     except Exception:
+        _pop_file_snapshot(context.session, safe_path)
         return
+    snapshot = _pop_file_snapshot(context.session, safe_path)
     lint_error = _lint_file_content(target_path, content)
     if not lint_error:
         return
+    rollback_message = _rollback_file_snapshot(
+        context.session,
+        safe_path,
+        snapshot,
+        expected_signature=current_signature,
+    )
+    feedback = _build_lint_feedback(
+        target_path,
+        lint_error,
+        rollback_message,
+        safe_path,
+        snapshot,
+    )
     context.tool_result = (
         f"{context.tool_result}\n"
         f"[LINT] {lint_error}\n"
+        f"{rollback_message or '未执行自动回滚。'}\n"
         "请修复该文件后重新执行相关写入。"
     )
-    context.set_feedback(
-        f"{target_path} 未通过语法校验。\n"
-        f"{lint_error}\n"
-        "请基于当前文件内容修复后重新提交。"
-    )
+    context.set_feedback(feedback)
 
 
 def _is_registered(
@@ -387,8 +744,7 @@ def register_builtin_hooks() -> None:
     """注册内置钩子."""
     if not _is_registered(HookType.PRE_TOOL, builtin_security_filter_hook):
         registry.register(HookType.PRE_TOOL, builtin_security_filter_hook, priority=100)
+    if not _is_registered(HookType.PRE_TOOL, builtin_lint_snapshot_hook):
+        registry.register(HookType.PRE_TOOL, builtin_lint_snapshot_hook, priority=90)
     if not _is_registered(HookType.POST_TOOL, builtin_lint_check_hook):
         registry.register(HookType.POST_TOOL, builtin_lint_check_hook, priority=100)
-
-
-registry = HookRegistry.get_instance()

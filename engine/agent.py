@@ -125,6 +125,15 @@ def append_memory_references(response: str, session: Session) -> str:
 
 
 def _resolve_hook_feedback(context: HookContext, default_message: str) -> str:
+    """解析钩子反馈信息.
+
+    Args:
+        context: 钩子上下文
+        default_message: 默认消息
+
+    Returns:
+        反馈信息
+    """
     parts = []
     for value in (context.reject_reason, context.feedback):
         if not isinstance(value, str):
@@ -136,12 +145,30 @@ def _resolve_hook_feedback(context: HookContext, default_message: str) -> str:
 
 
 def _resolve_hook_tool_args(context: HookContext, default_args: Any) -> Any:
+    """解析钩子工具参数.
+
+    Args:
+        context: 钩子上下文
+        default_args: 默认参数
+
+    Returns:
+        工具参数
+    """
     if not isinstance(context.tool_args, dict):
         return default_args
     return context.tool_args.get("args", default_args)
 
 
 def _merge_tool_feedback(tool_result: str, context: HookContext) -> str:
+    """合并工具结果与钩子反馈.
+
+    Args:
+        tool_result: 工具执行结果
+        context: 钩子上下文
+
+    Returns:
+        合并后的结果
+    """
     feedback = context.feedback
     if not isinstance(feedback, str):
         return tool_result
@@ -151,6 +178,19 @@ def _merge_tool_feedback(tool_result: str, context: HookContext) -> str:
     if feedback in tool_result:
         return tool_result
     return f"{tool_result}\n[HOOK_FEEDBACK]\n{feedback}"
+
+
+def _contains_end_keyword(response: str) -> bool:
+    """检查响应是否包含结束关键词.
+
+    Args:
+        response: 响应文本
+
+    Returns:
+        是否包含结束关键词
+    """
+    normalized = response.lower()
+    return any(keyword in normalized for keyword in END_KEYWORDS)
 
 
 def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> str:
@@ -291,7 +331,7 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
             instructions = parse_commands(response)
 
             if not instructions:
-                if any(kw in response for kw in END_KEYWORDS):
+                if _contains_end_keyword(response):
                     current_task.complete()
                     final_response = append_knowledge_references(response, session)
                     final_response = append_skill_references(final_response, session)
@@ -336,11 +376,15 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
 
             results = []
             user_cancelled = False
-            uncertainty_detected = any(k in response.lower() for k in UNCERTAINTY_KEYWORDS)
+            uncertainty_detected = any(
+                k in response.lower() for k in UNCERTAINTY_KEYWORDS
+            )
 
             for inst_type, inst_args in instructions:
-                is_allowed, reason_or_clarification = security_manager.check_authorization(
-                    inst_type, inst_args, uncertainty_detected
+                is_allowed, reason_or_clarification = (
+                    security_manager.check_authorization(
+                        inst_type, inst_args, uncertainty_detected
+                    )
                 )
 
                 if not is_allowed:
@@ -379,7 +423,9 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
                     sub_result = run(sub_task_desc, sub_session, parent_task_id=current_task.id)
                     output_res = sub_result
                 else:
-                    output_res = execute_instruction(inst_type, inst_args, cwd=session.get('cwd', '.'))
+                    output_res = execute_instruction(
+                        inst_type, inst_args, cwd=session.get('cwd', '.')
+                    )
                     log_output(
                         f"指令 ({inst_type}): {inst_args}\n输出:\n{output_res}"
                     )
