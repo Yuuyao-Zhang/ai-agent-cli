@@ -1,23 +1,32 @@
+# LLM 配置部分
 llm:
-  api_key: null
-  model: qwen-plus
-  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
-  embedding_url: https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings
-  temperature: 0.7
-  max_tokens: null
+  api_key: null  # API 密钥，为空时需通过环境变量设置
+  model: qwen-plus  # 使用的语言模型名称
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions  # 聊天补全 API 地址
+  embedding_url: https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings  # 文本嵌入 API 地址
+  temperature: 0.7  # 采样温度，控制输出的随机性
+  max_tokens: null  # 单次请求最大生成 token 数
+  budget_max_tokens: null  # 预算限制的最大 token 数
+  budget_warning_ratio: 0.8  # 预算警告阈值比例
+  max_requests_per_window: null  # 时间窗口内最大请求数
+  request_window_seconds: 60  # 请求时间窗口（秒）
+  request_warning_ratio: 0.8  # 请求频率警告阈值比例
 
+# 安全配置部分
 security:
-  trusted_domains: null
-  acl_config: null
+  trusted_domains: null  # 可信域名列表
+  acl_config: null  # 访问控制列表配置
 
+# 应用配置部分
 app:
-  todo_storage_path: .todos.json
-  debug_mode: false
-  log_level: INFO
-  checkpoint_dir: checkpoints
-  vector_db_dir: vectordb
-  mcp_data_dir: mcp/mcp_data
+  todo_storage_path: .todos.json  # 待办事项存储文件路径
+  debug_mode: false  # 调试模式开关
+  log_level: INFO  # 日志级别
+  checkpoint_dir: checkpoints  # 检查点保存目录
+  vector_db_dir: vectordb  # 向量数据库目录
+  mcp_data_dir: mcp/mcp_data  # MCP 数据存储目录
 
+# MCP 服务器配置部分
 mcpServers:
   baidu-maps:
-    url: https://mcp.map.baidu.com/mcp?ak=${BAIDU_MAPS_MCP_AK}
+    url: https://mcp.map.baidu.com/mcp?ak=${BAIDU_MAPS_MCP_AK}  # 百度地图 MCP 服务地址，需设置 BAIDU_MAPS_MCP_AK 环境变量

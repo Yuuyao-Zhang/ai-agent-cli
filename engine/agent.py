@@ -31,7 +31,9 @@ from engine.tools import execute_instruction
 from engine.hooks import (
     CONTINUATION_PROMPT_METADATA_KEY,
     CONTINUATION_REQUIRED_METADATA_KEY,
+    LLM_COST_WARNING_METADATA_KEY,
     LLM_FINISH_REASON_METADATA_KEY,
+    LLM_USAGE_METADATA_KEY,
     HookChain,
     HookContext,
     HookType,
@@ -193,6 +195,24 @@ def _merge_tool_feedback(tool_result: str, context: HookContext) -> str:
     if feedback in tool_result:
         return tool_result
     return f"{tool_result}\n[HOOK_FEEDBACK]\n{feedback}"
+
+
+def _append_response_notice(response: str, notice: Any) -> str:
+    """追加通知信息到响应末尾.
+
+    Args:
+        response: 原始响应
+        notice: 通知信息
+
+    Returns:
+        追加通知后的响应
+    """
+    if not isinstance(notice, str):
+        return response
+    notice = notice.strip()
+    if not notice or notice in response:
+        return response
+    return f"{response.rstrip()}\n\n{notice}"
 
 
 def _contains_end_keyword(response: str) -> bool:
@@ -357,6 +377,10 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
             hooks.execute(HookType.PRE_LLM, hook_ctx)
             if hook_ctx.llm_input is not None:
                 final_messages = hook_ctx.llm_input
+            if hook_ctx.is_propagation_stopped:
+                return fail_current_task(
+                    _resolve_hook_feedback(hook_ctx, "LLM 调用被钩子拦截。")
+                )
 
             llm_result = call_qwen(
                 final_messages,
@@ -372,7 +396,7 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
                     LLM_FINISH_REASON_METADATA_KEY: llm_result.finish_reason,
                     "llm_stream_completed": llm_result.stream_completed,
                     "llm_saw_done": llm_result.saw_done,
-                    "llm_usage": llm_result.usage,
+                    LLM_USAGE_METADATA_KEY: llm_result.usage,
                 }
             else:
                 response = llm_result
@@ -389,6 +413,7 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
             hooks.execute(HookType.POST_LLM, hook_ctx)
             if hook_ctx.llm_output is not None:
                 response = hook_ctx.llm_output
+            response_notice = hook_ctx.metadata.get(LLM_COST_WARNING_METADATA_KEY)
             
             if not response:
                 return fail_current_task("LLM API 调用失败。")
@@ -430,7 +455,11 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
             if not instructions:
                 if _contains_end_keyword(full_response):
                     current_task.complete()
-                    final_response = append_knowledge_references(full_response, session)
+                    final_response = _append_response_notice(
+                        full_response,
+                        response_notice,
+                    )
+                    final_response = append_knowledge_references(final_response, session)
                     final_response = append_skill_references(final_response, session)
                     final_response = append_memory_references(final_response, session)
                     
@@ -449,7 +478,11 @@ def run(task_desc: str, session: Session = None, parent_task_id: str = None) -> 
                     marker in full_response for marker in INCOMPLETE_MARKERS
                 ):
                     current_task.complete()
-                    final_response = append_knowledge_references(full_response, session)
+                    final_response = _append_response_notice(
+                        full_response,
+                        response_notice,
+                    )
+                    final_response = append_knowledge_references(final_response, session)
                     final_response = append_skill_references(final_response, session)
                     final_response = append_memory_references(final_response, session)
                     

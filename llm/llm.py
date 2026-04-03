@@ -26,6 +26,17 @@ except ImportError:
 
 @dataclass
 class LLMResponse:
+    """LLM 响应数据类.
+
+    Attributes:
+        content: 响应内容
+        finish_reason: 完成原因
+        usage: token 使用统计
+        saw_done: 是否看到 [DONE] 标记
+        stream_completed: 流式输出是否完成
+        error: 错误信息
+    """
+
     content: str
     finish_reason: Optional[str] = None
     usage: Optional[Dict[str, Any]] = None
@@ -105,6 +116,39 @@ def _render_stream_piece(
                 answer_parts.append(answer_text)
             state["in_think"] = True
             remaining = remaining[idx + len("<think>"):]
+
+
+def _format_usage_metrics(
+    duration: float,
+    content: str,
+    usage: Optional[Dict[str, Any]]
+) -> str:
+    """格式化使用指标信息.
+
+    Args:
+        duration: 请求耗时
+        content: 响应内容
+        usage: token 使用统计
+
+    Returns:
+        格式化的指标字符串
+    """
+    approx_tokens = len(content) // 4
+    if not isinstance(usage, dict):
+        return f"[Metrics] Latency: {duration:.2f}s | Approx Tokens: {approx_tokens}"
+    prompt_tokens = usage.get("prompt_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    total_tokens = usage.get("total_tokens")
+    usage_parts = []
+    if isinstance(prompt_tokens, (int, float)):
+        usage_parts.append(f"Prompt: {int(prompt_tokens)}")
+    if isinstance(completion_tokens, (int, float)):
+        usage_parts.append(f"Completion: {int(completion_tokens)}")
+    if isinstance(total_tokens, (int, float)):
+        usage_parts.append(f"Total: {int(total_tokens)}")
+    if not usage_parts:
+        return f"[Metrics] Latency: {duration:.2f}s | Approx Tokens: {approx_tokens}"
+    return f"[Metrics] Latency: {duration:.2f}s | {' | '.join(usage_parts)}"
 
 
 def call_qwen(
@@ -240,7 +284,7 @@ def call_qwen(
                     content = "".join(answer_parts)
 
                     duration = time.time() - start_time
-                    print(f"[Metrics] Latency: {duration:.2f}s | Approx Tokens: {len(content)//4}")
+                    print(_format_usage_metrics(duration, content, usage))
 
                     if use_cache and KV_CACHE_AVAILABLE and content:
                         query_text = json.dumps(messages, ensure_ascii=False)
@@ -261,7 +305,13 @@ def call_qwen(
                     content = choice["message"]["content"]
 
                     duration = time.time() - start_time
-                    print(f"[Metrics] Latency: {duration:.2f}s | Approx Tokens: {len(content)//4}")
+                    print(
+                        _format_usage_metrics(
+                            duration,
+                            content,
+                            result.get("usage"),
+                        )
+                    )
 
                     if use_cache and KV_CACHE_AVAILABLE and content:
                         query_text = json.dumps(messages, ensure_ascii=False)

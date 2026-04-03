@@ -7,12 +7,13 @@ import ast
 import json
 import os
 import threading
+import time
 import traceback
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Callable, Dict, List, Optional
 
-from common.config import YAML_AVAILABLE
+from common.config import YAML_AVAILABLE, config
 from common.file_lock import FileLock
 from common.io_utils import debug, error
 from engine.tools import validate_path
@@ -207,9 +208,12 @@ class HookRegistry:
 registry = HookRegistry.get_instance()
 
 LLM_FINISH_REASON_METADATA_KEY = "llm_finish_reason"
+LLM_USAGE_METADATA_KEY = "llm_usage"
+LLM_COST_WARNING_METADATA_KEY = "llm_cost_warning"
 CONTINUATION_REQUIRED_METADATA_KEY = "continuation_required"
 CONTINUATION_PROMPT_METADATA_KEY = "continuation_prompt"
 HOOK_FILE_SNAPSHOT_METADATA_KEY = "hook_file_snapshot"
+LLM_BUDGET_STATE_SESSION_KEY = "_llm_budget_state"
 
 
 class HookChain:
@@ -325,6 +329,238 @@ def _session_set(session: Any, key: str, value: Any) -> bool:
         return True
     except TypeError:
         return False
+
+
+def _to_non_negative_int(value: Any) -> int:
+    """将值转换为非负整数.
+
+    Args:
+        value: 输入值
+
+    Returns:
+        非负整数
+    """
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float)):
+        return max(int(value), 0)
+    return 0
+
+
+def _to_optional_positive_int(value: Any) -> Optional[int]:
+    """将值转换为正整数或 None.
+
+    Args:
+        value: 输入值
+
+    Returns:
+        正整数或 None
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        value = int(value)
+        if value > 0:
+            return value
+    return None
+
+
+def _to_ratio(value: Any, default: float) -> float:
+    """将值转换为比率值 (0, 1].
+
+    Args:
+        value: 输入值
+        default: 默认值
+
+    Returns:
+        比率值
+    """
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        value = float(value)
+        if 0 < value <= 1:
+            return value
+    return default
+
+
+def _get_budget_limits() -> Dict[str, float | int | None]:
+    """获取预算限制配置.
+
+    Returns:
+        包含 token 和请求限制的字典
+    """
+    return {
+        "token_limit": _to_optional_positive_int(config.llm.budget_max_tokens),
+        "token_warning_ratio": _to_ratio(config.llm.budget_warning_ratio, 0.8),
+        "request_limit": _to_optional_positive_int(
+            config.llm.max_requests_per_window
+        ),
+        "request_window_seconds": _to_optional_positive_int(
+            config.llm.request_window_seconds
+        ) or 60,
+        "request_warning_ratio": _to_ratio(
+            config.llm.request_warning_ratio,
+            0.8,
+        ),
+    }
+
+
+def _normalize_request_timestamps(value: Any) -> List[float]:
+    """规范化请求时间戳列表.
+
+    Args:
+        value: 输入值
+
+    Returns:
+        时间戳列表
+    """
+    if not isinstance(value, list):
+        return []
+    timestamps = []
+    for item in value:
+        if isinstance(item, bool):
+            continue
+        if isinstance(item, (int, float)):
+            timestamps.append(float(item))
+    return timestamps
+
+
+def _prune_request_timestamps(
+    timestamps: List[float],
+    now: float,
+    window_seconds: int,
+) -> List[float]:
+    """修剪过期的请求时间戳.
+
+    Args:
+        timestamps: 时间戳列表
+        now: 当前时间
+        window_seconds: 时间窗口秒数
+
+    Returns:
+        修剪后的时间戳列表
+    """
+    return [
+        timestamp
+        for timestamp in timestamps
+        if now - timestamp < window_seconds
+    ]
+
+
+def _get_budget_state(session: Any) -> Dict[str, Any]:
+    """获取会话中的预算状态.
+
+    Args:
+        session: 会话对象
+
+    Returns:
+        预算状态字典
+    """
+    state = _session_get(session, LLM_BUDGET_STATE_SESSION_KEY, {})
+    if not isinstance(state, dict):
+        state = {}
+    normalized_state = {
+        "prompt_tokens": _to_non_negative_int(state.get("prompt_tokens")),
+        "completion_tokens": _to_non_negative_int(state.get("completion_tokens")),
+        "total_tokens": _to_non_negative_int(state.get("total_tokens")),
+        "request_count_total": _to_non_negative_int(
+            state.get("request_count_total")
+        ),
+        "request_timestamps": _normalize_request_timestamps(
+            state.get("request_timestamps")
+        ),
+    }
+    _session_set(session, LLM_BUDGET_STATE_SESSION_KEY, normalized_state)
+    return normalized_state
+
+
+def _save_budget_state(session: Any, state: Dict[str, Any]) -> None:
+    """保存预算状态到会话.
+
+    Args:
+        session: 会话对象
+        state: 预算状态字典
+    """
+    _session_set(session, LLM_BUDGET_STATE_SESSION_KEY, state)
+
+
+def _extract_usage_totals(usage: Any) -> Dict[str, int]:
+    """从 usage 对象提取 token 统计.
+
+    Args:
+        usage: usage 对象
+
+    Returns:
+        token 统计字典
+    """
+    if not isinstance(usage, dict):
+        return {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+    prompt_tokens = _to_non_negative_int(usage.get("prompt_tokens"))
+    completion_tokens = _to_non_negative_int(usage.get("completion_tokens"))
+    total_tokens = _to_non_negative_int(usage.get("total_tokens"))
+    if total_tokens == 0:
+        total_tokens = prompt_tokens + completion_tokens
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def _build_budget_warnings(state: Dict[str, Any]) -> List[str]:
+    """构建预算警告消息列表.
+
+    Args:
+        state: 预算状态字典
+
+    Returns:
+        警告消息列表
+    """
+    warnings: List[str] = []
+    limits = _get_budget_limits()
+    token_limit = limits["token_limit"]
+    if isinstance(token_limit, int):
+        total_tokens = _to_non_negative_int(state.get("total_tokens"))
+        token_warning_line = max(
+            1,
+            int(token_limit * float(limits["token_warning_ratio"])),
+        )
+        if total_tokens >= token_limit:
+            warnings.append(
+                f"[预算] LLM token 已达到预算上限 ({total_tokens}/{token_limit})，"
+                "后续模型请求将被阻止。"
+            )
+        elif total_tokens >= token_warning_line:
+            warnings.append(
+                f"[预算] LLM token 已接近预算上限 ({total_tokens}/{token_limit})，"
+                "请尽量精简后续步骤。"
+            )
+    request_limit = limits["request_limit"]
+    if isinstance(request_limit, int):
+        request_count = len(
+            _normalize_request_timestamps(state.get("request_timestamps"))
+        )
+        request_warning_line = max(
+            1,
+            int(request_limit * float(limits["request_warning_ratio"])),
+        )
+        window_seconds = int(limits["request_window_seconds"])
+        if request_count >= request_limit:
+            warnings.append(
+                f"[限流] 最近 {window_seconds} 秒内的 LLM 请求已达到上限 "
+                f"({request_count}/{request_limit})，当前时间窗内后续请求将被阻止。"
+            )
+        elif request_count >= request_warning_line:
+            warnings.append(
+                f"[限流] 最近 {window_seconds} 秒内已发起 "
+                f"{request_count}/{request_limit} 次 LLM 请求，请减少不必要的调用。"
+            )
+    return warnings
 
 
 def _read_file_with_lock(path: str) -> str:
@@ -805,6 +1041,95 @@ def builtin_lint_check_hook(context: HookContext) -> None:
     context.set_feedback(feedback)
 
 
+def builtin_llm_budget_guard_hook(context: HookContext) -> None:
+    """内置 LLM 预算守卫钩子.
+
+    在 LLM 调用前检查 token 预算和请求频率限制。
+
+    Args:
+        context: 钩子上下文
+    """
+    state = _get_budget_state(context.session)
+    limits = _get_budget_limits()
+    token_limit = limits["token_limit"]
+    if isinstance(token_limit, int):
+        total_tokens = _to_non_negative_int(state.get("total_tokens"))
+        if total_tokens >= token_limit:
+            context.reject(
+                "LLM token 预算已耗尽",
+                (
+                    f"LLM token 预算已达到上限 ({total_tokens}/{token_limit})，"
+                    "已阻止新的模型请求。请结束当前任务、调高预算上限，"
+                    "或减少上下文与工具调用。"
+                ),
+            )
+            return
+    request_limit = limits["request_limit"]
+    if not isinstance(request_limit, int):
+        return
+    now = time.time()
+    request_timestamps = _prune_request_timestamps(
+        _normalize_request_timestamps(state.get("request_timestamps")),
+        now,
+        int(limits["request_window_seconds"]),
+    )
+    state["request_timestamps"] = request_timestamps
+    _save_budget_state(context.session, state)
+    request_count = len(request_timestamps)
+    if request_count >= request_limit:
+        context.reject(
+            "LLM API 调用频率已超限",
+            (
+                f"最近 {int(limits['request_window_seconds'])} 秒内已发起 "
+                f"{request_count} 次 LLM 请求，达到上限 {request_limit} 次。"
+                "当前时间窗内已阻止新的模型请求，请稍后重试或调高限制。"
+            ),
+        )
+
+
+def builtin_llm_budget_tracking_hook(context: HookContext) -> None:
+    """内置 LLM 预算追踪钩子.
+
+    在 LLM 调用后更新 token 使用统计和请求频率。
+
+    Args:
+        context: 钩子上下文
+    """
+    state = _get_budget_state(context.session)
+    usage_totals = _extract_usage_totals(
+        context.metadata.get(LLM_USAGE_METADATA_KEY)
+    )
+    state["prompt_tokens"] = (
+        _to_non_negative_int(state.get("prompt_tokens"))
+        + usage_totals["prompt_tokens"]
+    )
+    state["completion_tokens"] = (
+        _to_non_negative_int(state.get("completion_tokens"))
+        + usage_totals["completion_tokens"]
+    )
+    state["total_tokens"] = (
+        _to_non_negative_int(state.get("total_tokens"))
+        + usage_totals["total_tokens"]
+    )
+    state["request_count_total"] = (
+        _to_non_negative_int(state.get("request_count_total"))
+        + 1
+    )
+    limits = _get_budget_limits()
+    now = time.time()
+    request_timestamps = _prune_request_timestamps(
+        _normalize_request_timestamps(state.get("request_timestamps")),
+        now,
+        int(limits["request_window_seconds"]),
+    )
+    request_timestamps.append(now)
+    state["request_timestamps"] = request_timestamps
+    _save_budget_state(context.session, state)
+    warnings = _build_budget_warnings(state)
+    if warnings:
+        context.metadata[LLM_COST_WARNING_METADATA_KEY] = "\n".join(warnings)
+
+
 def builtin_llm_continuation_hook(context: HookContext) -> None:
     """内置 LLM 续写钩子.
 
@@ -849,6 +1174,10 @@ def _is_registered(
 
 def register_builtin_hooks() -> None:
     """注册内置钩子."""
+    if not _is_registered(HookType.PRE_LLM, builtin_llm_budget_guard_hook):
+        registry.register(HookType.PRE_LLM, builtin_llm_budget_guard_hook, priority=110)
+    if not _is_registered(HookType.POST_LLM, builtin_llm_budget_tracking_hook):
+        registry.register(HookType.POST_LLM, builtin_llm_budget_tracking_hook, priority=110)
     if not _is_registered(HookType.POST_LLM, builtin_llm_continuation_hook):
         registry.register(HookType.POST_LLM, builtin_llm_continuation_hook, priority=100)
     if not _is_registered(HookType.PRE_TOOL, builtin_security_filter_hook):

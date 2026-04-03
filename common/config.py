@@ -30,6 +30,11 @@ class LLMConfig:
     max_retries: int = 3
     retry_delay: float = 1.0
     timeout: int = 60
+    budget_max_tokens: Optional[int] = None
+    budget_warning_ratio: float = 0.8
+    max_requests_per_window: Optional[int] = None
+    request_window_seconds: int = 60
+    request_warning_ratio: float = 0.8
 
 
 @dataclass
@@ -212,6 +217,26 @@ class ConfigFileManager:
             self._config.llm.base_url = os.environ["LLM_BASE_URL"]
         if "LLM_EMBEDDING_URL" in os.environ:
             self._config.llm.embedding_url = os.environ["LLM_EMBEDDING_URL"]
+        if "LLM_BUDGET_MAX_TOKENS" in os.environ:
+            self._config.llm.budget_max_tokens = int(
+                os.environ["LLM_BUDGET_MAX_TOKENS"]
+            )
+        if "LLM_BUDGET_WARNING_RATIO" in os.environ:
+            self._config.llm.budget_warning_ratio = float(
+                os.environ["LLM_BUDGET_WARNING_RATIO"]
+            )
+        if "LLM_MAX_REQUESTS_PER_WINDOW" in os.environ:
+            self._config.llm.max_requests_per_window = int(
+                os.environ["LLM_MAX_REQUESTS_PER_WINDOW"]
+            )
+        if "LLM_REQUEST_WINDOW_SECONDS" in os.environ:
+            self._config.llm.request_window_seconds = int(
+                os.environ["LLM_REQUEST_WINDOW_SECONDS"]
+            )
+        if "LLM_REQUEST_WARNING_RATIO" in os.environ:
+            self._config.llm.request_warning_ratio = float(
+                os.environ["LLM_REQUEST_WARNING_RATIO"]
+            )
 
         # Security
         if "TRAE_TRUSTED_DOMAINS" in os.environ:
@@ -261,6 +286,11 @@ class ConfigFileManager:
                 "embedding_url": default_config.llm.embedding_url,
                 "temperature": default_config.llm.temperature,
                 "max_tokens": None,
+                "budget_max_tokens": default_config.llm.budget_max_tokens,
+                "budget_warning_ratio": default_config.llm.budget_warning_ratio,
+                "max_requests_per_window": default_config.llm.max_requests_per_window,
+                "request_window_seconds": default_config.llm.request_window_seconds,
+                "request_warning_ratio": default_config.llm.request_warning_ratio,
             },
             "security": {
                 "trusted_domains": None,
